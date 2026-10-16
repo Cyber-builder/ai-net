@@ -53,6 +53,12 @@ export interface BaseEvent {
    * any subscriber sees the event; absent on events not yet emitted.
    */
   taskSeq?: number;
+  /** Optional metadata shared by on-chain event adapters. */
+  meta?: {
+    version: number;
+    contract: string;
+    ledgerTimestamp?: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +305,14 @@ export function makeNodeStarted(
   payload: NodeStartedPayload,
   occurredAt = nowIso()
 ): NodeStartedEvent {
-  return { type: 'NodeStarted', taskId, nodeId, occurredAt, version: CURRENT_EVENT_VERSION, payload };
+  return {
+    type: 'NodeStarted',
+    taskId,
+    nodeId,
+    occurredAt,
+    version: CURRENT_EVENT_VERSION,
+    payload,
+  };
 }
 
 export function makeNodeCompleted(
@@ -308,7 +321,14 @@ export function makeNodeCompleted(
   payload: NodeCompletedPayload,
   occurredAt = nowIso()
 ): NodeCompletedEvent {
-  return { type: 'NodeCompleted', taskId, nodeId, occurredAt, version: CURRENT_EVENT_VERSION, payload };
+  return {
+    type: 'NodeCompleted',
+    taskId,
+    nodeId,
+    occurredAt,
+    version: CURRENT_EVENT_VERSION,
+    payload,
+  };
 }
 
 export function makeNodeFailed(
@@ -317,7 +337,14 @@ export function makeNodeFailed(
   payload: NodeFailedPayload,
   occurredAt = nowIso()
 ): NodeFailedEvent {
-  return { type: 'NodeFailed', taskId, nodeId, occurredAt, version: CURRENT_EVENT_VERSION, payload };
+  return {
+    type: 'NodeFailed',
+    taskId,
+    nodeId,
+    occurredAt,
+    version: CURRENT_EVENT_VERSION,
+    payload,
+  };
 }
 
 export function makePaymentLocked(
@@ -326,7 +353,14 @@ export function makePaymentLocked(
   payload: PaymentLockedPayload,
   occurredAt = nowIso()
 ): PaymentLockedEvent {
-  return { type: 'PaymentLocked', taskId, nodeId, occurredAt, version: CURRENT_EVENT_VERSION, payload };
+  return {
+    type: 'PaymentLocked',
+    taskId,
+    nodeId,
+    occurredAt,
+    version: CURRENT_EVENT_VERSION,
+    payload,
+  };
 }
 
 export function makePaymentReleased(
@@ -335,7 +369,14 @@ export function makePaymentReleased(
   payload: PaymentReleasedPayload,
   occurredAt = nowIso()
 ): PaymentReleasedEvent {
-  return { type: 'PaymentReleased', taskId, nodeId, occurredAt, version: CURRENT_EVENT_VERSION, payload };
+  return {
+    type: 'PaymentReleased',
+    taskId,
+    nodeId,
+    occurredAt,
+    version: CURRENT_EVENT_VERSION,
+    payload,
+  };
 }
 
 export function makeTaskCompleted(taskId: string, occurredAt = nowIso()): TaskCompletedEvent {
