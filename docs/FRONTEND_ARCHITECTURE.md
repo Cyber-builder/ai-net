@@ -10,7 +10,8 @@ patterns, and conventions for the ai-net frontend.
 ```
 frontend/src/
 ├── components/          # Reusable UI components
-│   ├── common/          # Generic, domain-agnostic (Toast, Skeleton, ErrorBoundary)
+│   ├── common/          # Generic, domain-agnostic (Toast, Skeleton, ErrorBoundary, MotionProvider)
+│   ├── ui/skeleton/     # Skeleton kit entrypoint (re-exports + SkeletonChart)
 │   ├── layout/          # App shell, navigation, sidebar
 │   ├── landing/         # Public landing page components
 │   ├── dashboard/       # Dashboard widgets (KPI cards, tables, charts)
@@ -121,6 +122,32 @@ Data fetching and component-local state live in custom hooks:
 2. Create `useHookName.test.ts` for unit tests.
 3. Export as a named export.
 4. Prefix with `use`.
+
+---
+
+## Skeleton kit (#719)
+
+Import placeholders from a single entrypoint — never hand-roll
+`animate-pulse` skeleton markup in pages:
+
+```tsx
+import { Skeleton, SkeletonText, SkeletonCard, SkeletonTable, SkeletonChart } from '../../components/ui/skeleton';
+```
+
+| Primitive | Use for |
+|---|---|
+| `Skeleton` (`text`/`pill`/`circle`/`rect`/`card`) | Single line, chip, avatar dot, block |
+| `SkeletonText` | Paragraph (configurable `lines`, shorter last line) |
+| `SkeletonCard` | Framed panel wrapper |
+| `SkeletonTable` | Table (`rows` × `columns`, `rowTestId` for tests) |
+| `SkeletonChart` | Bar-chart area (deterministic heights, snapshot-stable) |
+
+The shimmer is decorative and disabled under
+`prefers-reduced-motion` (`Skeleton.module.css`); the placeholder shape stays.
+`TaskDetailPage`, `NewTaskPage` (DAG preview), `dashboard`, `TaskHistoryPage`,
+and `WalletPage` all compose this kit. The only remaining `animate-pulse` /
+`animate-spin` uses are live status indicators (hero badge, running timeline
+node), which freeze under reduced motion via `styles/global.css`.
 
 ---
 
