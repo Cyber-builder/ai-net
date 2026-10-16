@@ -75,6 +75,9 @@ jobs:
       - name: Type-check and build
         run: npm run build
 
+      - name: Enforce gzipped route bundle budgets
+        run: npm run size
+
       - name: Unit tests & coverage
         run: npm run test:coverage
 
@@ -165,12 +168,22 @@ jobs:
           path: frontend/playwright-report-visual/
           retention-days: 14
 
+      - name: Upload visual diff artifacts (actual/diff/expected PNGs)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-visual-diffs
+          path: frontend/test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Link visual diffs in job summary
         if: failure()
         run: |
           {
             echo "### Visual regression diffs detected";
             echo "Open the **playwright-visual-report** artifact attached to this run (Summary tab → Artifacts) and load \`index.html\` for side-by-side expected/actual/diff images per failing snapshot.";
+            echo "Raw PNGs (actual/diff/expected) are in the **playwright-visual-diffs** artifact (\`frontend/test-results/\`).";
           } >> "$GITHUB_STEP_SUMMARY"
 
   contracts:
@@ -257,6 +270,15 @@ jobs:
           cargo build --locked -p dispute-resolution --target wasm32v1-none --release
           cargo build --locked -p upgrade-manager --target wasm32v1-none --release
           ls -la target/wasm32v1-none/release/*.wasm
+
+      - name: Validate event topic convention
+        run: node scripts/check-events.mjs
+
+      - name: Regenerate TypeScript clients and check drift
+        run: |
+          npm run codegen
+          git diff --exit-code -- src/generated
+          test -z "$(git status --porcelain -- src/generated)"
 
   # ── Backend E2E: smoke (registry/list/create) ───────────────────────────────
   # Fast, deterministic smoke covering POST /api/agents/register,

@@ -15,6 +15,7 @@ import ErrorBoundary from './components/common/ErrorBoundary'
 import RouteLoader from './components/common/RouteLoader'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import { CommandPalette } from './components/common/CommandPalette'
+import { MotionProvider } from './components/common/MotionProvider'
 import { useCommandPalette } from './hooks/useCommandPalette'
 import './components/common/Toast.css'
 
@@ -118,20 +119,22 @@ const App: React.FC = () => {
   return (
     <I18nextProvider i18n={i18n}>
       <ErrorBoundary>
-        <ThemeProvider>
-          <WalletProvider>
-            <ToastProvider>
-              <NotificationProvider>
-                <RouteProgressProvider>
-                  <Router>
-                    <RouteProgressBar />
-                    <RoutedContent />
-                  </Router>
-                </RouteProgressProvider>
-              </NotificationProvider>
-            </ToastProvider>
-          </WalletProvider>
-        </ThemeProvider>
+        <MotionProvider>
+          <ThemeProvider>
+            <WalletProvider>
+              <ToastProvider>
+                <NotificationProvider>
+                  <RouteProgressProvider>
+                    <Router>
+                      <RouteProgressBar />
+                      <RoutedContent />
+                    </Router>
+                  </RouteProgressProvider>
+                </NotificationProvider>
+              </ToastProvider>
+            </WalletProvider>
+          </ThemeProvider>
+        </MotionProvider>
       </ErrorBoundary>
     </I18nextProvider>
   )

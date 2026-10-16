@@ -1,7 +1,7 @@
 # AI-Net Canonical Event Schema
 
 This document is the authoritative reference for every event emitted by the
-ai-net backend event-sourcing system.  It covers schema design, versioning
+ai-net backend event-sourcing system. It covers schema design, versioning
 rules, per-version field additions, migration guidance for consumers, and
 a worked example for each event type.
 
@@ -9,13 +9,13 @@ a worked example for each event type.
 
 ## 1. Design Principles
 
-| Principle | Description |
-|-----------|-------------|
-| **Discriminated union** | Every event carries a `type` field that identifies the concrete shape. |
-| **Versioned payloads** | Every event record carries a `version` integer. Consumers branch on this value. |
-| **Append-only within a version** | Adding new optional fields does NOT require a version bump — consumers tolerate unknown fields. |
-| **Breaking changes bump version** | Removing, renaming, or changing the type of an existing field requires a version bump. |
-| **Stable topic pairs** | The `(type)` discriminator is stable across versions; a schema change bumps `version`, not `type`. |
+| Principle                         | Description                                                                                        |
+| --------------------------------- | -------------------------------------------------------------------------------------------------- |
+| **Discriminated union**           | Every event carries a `type` field that identifies the concrete shape.                             |
+| **Versioned payloads**            | Every event record carries a `version` integer. Consumers branch on this value.                    |
+| **Append-only within a version**  | Adding new optional fields does NOT require a version bump — consumers tolerate unknown fields.    |
+| **Breaking changes bump version** | Removing, renaming, or changing the type of an existing field requires a version bump.             |
+| **Stable topic pairs**            | The `(type)` discriminator is stable across versions; a schema change bumps `version`, not `type`. |
 
 ---
 
@@ -25,12 +25,12 @@ Every event, regardless of type, shares these base fields:
 
 ```jsonc
 {
-  "type": "TaskCreated",         // Discriminator — identifies the concrete shape
-  "taskId": "task_abc123",       // The task this event belongs to
-  "occurredAt": "2026-08-31T12:00:00.000Z",  // ISO-8601 wall-clock time
-  "version": 2,                  // Schema version (integer, >= 1)
-  "globalSeq": 42,               // Globally-ordered sequence (assigned on persist)
-  "taskSeq": 0                   // Per-task monotonic cursor (assigned by EventBus)
+  "type": "TaskCreated", // Discriminator — identifies the concrete shape
+  "taskId": "task_abc123", // The task this event belongs to
+  "occurredAt": "2026-08-31T12:00:00.000Z", // ISO-8601 wall-clock time
+  "version": 2, // Schema version (integer, >= 1)
+  "globalSeq": 42, // Globally-ordered sequence (assigned on persist)
+  "taskSeq": 0, // Per-task monotonic cursor (assigned by EventBus)
 }
 ```
 
@@ -38,17 +38,17 @@ Every event, regardless of type, shares these base fields:
 
 ## 3. Event Types and Version History
 
-| Event                 | v1 | v2 | Notes                                     |
-|-----------------------|----|----|-------------------------------------------|
-| `TaskCreated`         | ✅ | ✅ |                                           |
-| `NodeStarted`         | ✅ | ✅ |                                           |
-| `NodeCompleted`       | ✅ | ✅ |                                           |
-| `NodeFailed`          | ✅ | ✅ |                                           |
-| `PaymentLocked`       | ✅ | ✅ |                                           |
-| `PaymentReleased`     | ✅ | ✅ |                                           |
-| `TaskCompleted`       | ✅ | ✅ |                                           |
-| `TaskFailed`          | ✅ | ✅ |                                           |
-| `ReconciliationEvent` | ✅ | ✅ | Added by issue #496 — same shape in both  |
+| Event                 | v1  | v2  | Notes                                    |
+| --------------------- | --- | --- | ---------------------------------------- |
+| `TaskCreated`         | ✅  | ✅  |                                          |
+| `NodeStarted`         | ✅  | ✅  |                                          |
+| `NodeCompleted`       | ✅  | ✅  |                                          |
+| `NodeFailed`          | ✅  | ✅  |                                          |
+| `PaymentLocked`       | ✅  | ✅  |                                          |
+| `PaymentReleased`     | ✅  | ✅  |                                          |
+| `TaskCompleted`       | ✅  | ✅  |                                          |
+| `TaskFailed`          | ✅  | ✅  |                                          |
+| `ReconciliationEvent` | ✅  | ✅  | Added by issue #496 — same shape in both |
 
 ### 3.1 TaskCreated
 
@@ -65,8 +65,8 @@ Emitted when a task is created and enqueued.
   "payload": {
     "prompt": "Analyze Stellar DEX liquidity trends",
     "walletPublicKey": "GBZXN7...AAA",
-    "dagSize": 3
-  }
+    "dagSize": 3,
+  },
 }
 ```
 
@@ -85,8 +85,8 @@ Adds optional `agentId` and `durationMs` fields.
     "walletPublicKey": "GBZXN7...AAA",
     "dagSize": 3,
     "agentId": "agent-001",
-    "durationMs": 42100
-  }
+    "durationMs": 42100,
+  },
 }
 ```
 
@@ -106,8 +106,8 @@ Emitted when a DAG node begins execution.
   "occurredAt": "2026-08-31T12:00:01.000Z",
   "version": 1,
   "payload": {
-    "agentType": "research"
-  }
+    "agentType": "research",
+  },
 }
 ```
 
@@ -124,8 +124,8 @@ Adds optional `timeoutMs` field.
   "version": 2,
   "payload": {
     "agentType": "research",
-    "timeoutMs": 30000
-  }
+    "timeoutMs": 30000,
+  },
 }
 ```
 
@@ -145,8 +145,8 @@ Emitted when a DAG node completes successfully.
   "occurredAt": "2026-08-31T12:00:15.000Z",
   "version": 1,
   "payload": {
-    "result": { "summary": "Liquidity increased by 14%", "sources": 5 }
-  }
+    "result": { "summary": "Liquidity increased by 14%", "sources": 5 },
+  },
 }
 ```
 
@@ -163,8 +163,8 @@ Adds optional `durationMs` field.
   "version": 2,
   "payload": {
     "result": { "summary": "Liquidity increased by 14%", "sources": 5 },
-    "durationMs": 14000
-  }
+    "durationMs": 14000,
+  },
 }
 ```
 
@@ -184,8 +184,8 @@ Emitted when a DAG node fails after exhausting retries.
   "occurredAt": "2026-08-31T12:01:00.000Z",
   "version": 1,
   "payload": {
-    "error": "Agent timeout after 30s"
-  }
+    "error": "Agent timeout after 30s",
+  },
 }
 ```
 
@@ -202,8 +202,8 @@ Adds optional `retryCount` field.
   "version": 2,
   "payload": {
     "error": "Agent timeout after 30s",
-    "retryCount": 3
-  }
+    "retryCount": 3,
+  },
 }
 ```
 
@@ -224,8 +224,8 @@ Emitted when XLM is locked in escrow for an agent.
   "version": 1,
   "payload": {
     "balanceId": "000000...",
-    "amountStroops": 50000000
-  }
+    "amountStroops": 50000000,
+  },
 }
 ```
 
@@ -243,8 +243,8 @@ Adds optional `xlmAmount` field.
   "payload": {
     "balanceId": "000000...",
     "amountStroops": 50000000,
-    "xlmAmount": 5.0
-  }
+    "xlmAmount": 5.0,
+  },
 }
 ```
 
@@ -264,8 +264,8 @@ Emitted when escrowed funds are released to the agent.
   "occurredAt": "2026-08-31T12:00:16.000Z",
   "version": 1,
   "payload": {
-    "txHash": "d8e3b4a2c1f9e8d7..."
-  }
+    "txHash": "d8e3b4a2c1f9e8d7...",
+  },
 }
 ```
 
@@ -282,8 +282,8 @@ Adds optional `ledgerSequence` field.
   "version": 2,
   "payload": {
     "txHash": "d8e3b4a2c1f9e8d7...",
-    "ledgerSequence": 5241098
-  }
+    "ledgerSequence": 5241098,
+  },
 }
 ```
 
@@ -300,7 +300,7 @@ Emitted when all DAG nodes complete successfully.
   "type": "TaskCompleted",
   "taskId": "task_abc123",
   "occurredAt": "2026-08-31T12:01:30.000Z",
-  "version": 1
+  "version": 1,
 }
 ```
 
@@ -315,8 +315,8 @@ Adds optional `durationMs` field.
   "occurredAt": "2026-08-31T12:01:30.000Z",
   "version": 2,
   "payload": {
-    "durationMs": 90000
-  }
+    "durationMs": 90000,
+  },
 }
 ```
 
@@ -335,8 +335,8 @@ Emitted when a task fails (all retries exhausted or a non-recoverable error).
   "occurredAt": "2026-08-31T12:01:30.000Z",
   "version": 1,
   "payload": {
-    "error": "All agent dispatches failed"
-  }
+    "error": "All agent dispatches failed",
+  },
 }
 ```
 
@@ -352,8 +352,8 @@ Adds optional `failedStage` field.
   "version": 2,
   "payload": {
     "error": "All agent dispatches failed",
-    "failedStage": "dispatch"
-  }
+    "failedStage": "dispatch",
+  },
 }
 ```
 
@@ -369,14 +369,14 @@ the drift is detected (`payload.kind: "drift"`) and once when it is remediated
 (`payload.kind: "remediation"`). Consumers that only want "something changed"
 can subscribe to both and key off `payload.driftType`.
 
-| `driftType`           | Meaning                                                            |
-|-----------------------|--------------------------------------------------------------------|
-| `orphaned_locked`     | DB says `locked`, no on-chain claimable balance exists               |
-| `missing_release_tx`  | DB says `released`, the release transaction is absent from Horizon  |
-| `release_unconfirmed` | DB says `released`, the claimable balance is still claimable         |
+| `driftType`           | Meaning                                                                     |
+| --------------------- | --------------------------------------------------------------------------- |
+| `orphaned_locked`     | DB says `locked`, no on-chain claimable balance exists                      |
+| `missing_release_tx`  | DB says `released`, the release transaction is absent from Horizon          |
+| `release_unconfirmed` | DB says `released`, the claimable balance is still claimable                |
 | `expired_escrow`      | Task reached a terminal unsuccessful state while the escrow is still locked |
-| `missing_local`       | On-chain claimable balance has no local payment record              |
-| `amount_mismatch`     | On-chain and recorded amounts disagree                              |
+| `missing_local`       | On-chain claimable balance has no local payment record                      |
+| `amount_mismatch`     | On-chain and recorded amounts disagree                                      |
 
 The payload shape is identical in v1 and v2 — the event was introduced alongside
 schema v2 and every optional field simply defaults to absent.
@@ -396,8 +396,8 @@ schema v2 and every optional field simply defaults to absent.
     "taskId": "task_abc123",
     "nodeId": "node_risk",
     "severity": "warning",
-    "description": "Escrow for task=task_abc123, node=node_risk is still locked on-chain (...)"
-  }
+    "description": "Escrow for task=task_abc123, node=node_risk is still locked on-chain (...)",
+  },
 }
 ```
 
@@ -421,11 +421,11 @@ schema v2 and every optional field simply defaults to absent.
       "action": "refund_escrow",
       "status": "remediated",
       "txHash": "9f2c...",
-      "at": "2026-09-01T12:00:01.000Z"
+      "at": "2026-09-01T12:00:01.000Z",
     },
     "previousStatus": "locked",
-    "newStatus": "refunded"
-  }
+    "newStatus": "refunded",
+  },
 }
 ```
 
@@ -433,7 +433,7 @@ schema v2 and every optional field simply defaults to absent.
 `requeue_release`, `refund_escrow` or `manual_review`; `remediation.status` is one
 of `remediated`, `skipped`, `failed` or `manual_review`. A remediation event is
 only emitted when the action actually succeeded — a drift that was merely
-*reported* has `kind: "drift"` and no `remediation` block.
+_reported_ has `kind: "drift"` and no `remediation` block.
 
 ---
 
@@ -457,8 +457,8 @@ function handleTaskCreated(event: TaskCreatedEvent): void {
 
 ### 4.2 Unknown fields
 
-The schema is append-only within a major version.  New optional fields may
-appear without a version bump.  Consumers **must tolerate** unknown fields:
+The schema is append-only within a major version. New optional fields may
+appear without a version bump. Consumers **must tolerate** unknown fields:
 
 ```typescript
 // ✅ Safe — unknown fields are ignored
@@ -471,7 +471,7 @@ const payload = event.payload as Exact<TaskCreatedPayload>;
 ### 4.3 Version downgrade
 
 Consumers should not receive events with a version higher than the current
-schema.  If this happens (e.g. during a rolling upgrade), consumers should:
+schema. If this happens (e.g. during a rolling upgrade), consumers should:
 
 1. Log a warning.
 2. Attempt to process the event using the latest known schema.
@@ -480,7 +480,7 @@ schema.  If this happens (e.g. during a rolling upgrade), consumers should:
 ### 4.4 Migration from v1 to v2
 
 Version 2 adds **only optional fields** — no v1 fields are removed, renamed,
-or retyped.  Therefore:
+or retyped. Therefore:
 
 - V1 events are valid v2 events (v1 fields are a subset of v2 fields).
 - No data transformation is needed.
@@ -503,6 +503,21 @@ When a breaking change is required:
 ---
 
 ## 6. On-Chain Event Versioning (Soroban Smart Contracts)
+
+### Workspace contract event convention
+
+All Soroban event topics use lowercase `snake_case` names. The first topic is
+the contract namespace and the second is the action (`bid_submitted`, not
+`BidSubmitted` or `bidSubmitted`). Payload fields are ordered from identity to
+business values to time: IDs are addresses or strings, monetary values are
+`i128`, and timestamps are `u64`. New events should include a stable `meta`
+object when the payload is extended, containing the schema `version`, emitting
+contract, and ledger timestamp.
+
+`npm run events:check` scans every Rust contract event publication and rejects
+topic names that do not follow this convention. Backend event records retain
+their existing versioned envelope; on-chain payloads use the convention above
+and are documented alongside their contract.
 
 The Soroban smart contracts (`task_store`, `agent_registry`) maintain their
 own event versioning via the `version: u32` field in contract event payloads.
