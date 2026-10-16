@@ -112,6 +112,9 @@ jobs:
       - name: Check relative asset imports resolve
         run: npm run check:imports
 
+      - name: Check locale key parity
+        run: npm run i18n:check
+
       - name: Lint check
         run: npm run lint
 
