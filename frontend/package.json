@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "size": "node scripts/size.mjs",
     "typecheck": "tsc --noEmit",
     "check:imports": "node scripts/check-imports.mjs",
     "test": "vitest run",

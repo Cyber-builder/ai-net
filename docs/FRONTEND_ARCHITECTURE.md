@@ -36,17 +36,17 @@ frontend/src/
 
 ### Files
 
-| Kind | Pattern | Example |
-|------|---------|---------|
-| Component | `PascalCase.tsx` | `AgentCard.tsx`, `TaskFilterBar.tsx` |
-| CSS Module | `PascalCase.module.css` | `AgentCard.module.css` |
-| Plain CSS | `PascalCase.css` | `Toast.css` |
-| Hook | `camelCase.ts` (prefix `use`) | `useWallet.ts`, `useTaskWebSocket.ts` |
-| Type | `camelCase.ts` | `agent.ts`, `api.ts` |
-| Schema | `camelCase.ts` | `wallet.ts`, `task.ts` |
-| Utility | `camelCase.ts` | `format.ts`, `time.ts` |
-| Test | `*.test.ts` / `*.test.tsx` | `useNodeState.test.ts` |
-| i18n test | `*.i18n.test.tsx` | `RecentTasksTable.i18n.test.tsx` |
+| Kind       | Pattern                       | Example                               |
+| ---------- | ----------------------------- | ------------------------------------- |
+| Component  | `PascalCase.tsx`              | `AgentCard.tsx`, `TaskFilterBar.tsx`  |
+| CSS Module | `PascalCase.module.css`       | `AgentCard.module.css`                |
+| Plain CSS  | `PascalCase.css`              | `Toast.css`                           |
+| Hook       | `camelCase.ts` (prefix `use`) | `useWallet.ts`, `useTaskWebSocket.ts` |
+| Type       | `camelCase.ts`                | `agent.ts`, `api.ts`                  |
+| Schema     | `camelCase.ts`                | `wallet.ts`, `task.ts`                |
+| Utility    | `camelCase.ts`                | `format.ts`, `time.ts`                |
+| Test       | `*.test.ts` / `*.test.tsx`    | `useNodeState.test.ts`                |
+| i18n test  | `*.i18n.test.tsx`             | `RecentTasksTable.i18n.test.tsx`      |
 
 ### Components
 
@@ -70,27 +70,27 @@ frontend/src/
 
 Used for cross-cutting concerns that many components need:
 
-| Context | Purpose |
-|---------|---------|
-| `WalletContext` | Stellar wallet connection, signing, balance |
-| `ThemeContext` | Dark/light mode toggle |
-| `ToastContext` | Global toast notifications |
-| `NotificationContext` | In-app notification feed |
+| Context               | Purpose                                     |
+| --------------------- | ------------------------------------------- |
+| `WalletContext`       | Stellar wallet connection, signing, balance |
+| `ThemeContext`        | Dark/light mode toggle                      |
+| `ToastContext`        | Global toast notifications                  |
+| `NotificationContext` | In-app notification feed                    |
 
 ### Custom Hooks (Component State)
 
 Data fetching and component-local state live in custom hooks:
 
-| Hook | Purpose |
-|------|---------|
-| `useWallet` | Wallet connection and signing |
-| `useWalletBalance` | Balance polling |
-| `useTaskWebSocket` | Real-time task status via WS |
+| Hook               | Purpose                          |
+| ------------------ | -------------------------------- |
+| `useWallet`        | Wallet connection and signing    |
+| `useWalletBalance` | Balance polling                  |
+| `useTaskWebSocket` | Real-time task status via WS     |
 | `useAgentRegistry` | Agent discovery and registration |
-| `useTaskSubmit` | Task submission flow |
-| `useNotifications` | Notification polling |
-| `useTheme` | Theme preference persistence |
-| `useNetworkStats` | Network health metrics |
+| `useTaskSubmit`    | Task submission flow             |
+| `useNotifications` | Notification polling             |
+| `useTheme`         | Theme preference persistence     |
+| `useNetworkStats`  | Network health metrics           |
 
 ### Rules
 
@@ -163,3 +163,13 @@ npm run build
 
 Lint catches naming violations (unused imports, type issues). Build verifies
 the full bundle compiles without errors.
+
+## Bundle-size budgets
+
+The production build emits a manifest and `npm run size` reports the gzip size
+of every JavaScript route/vendor chunk. Budgets live in
+`frontend/size-budget.json`; the default is 150,000 gzip bytes per chunk.
+The frontend CI job runs this check after `npm run build` and fails when a
+chunk exceeds its budget. To update a budget intentionally, build locally,
+review the reported dependency and route change, then update the JSON with the
+measured gzip size plus a small documented margin.

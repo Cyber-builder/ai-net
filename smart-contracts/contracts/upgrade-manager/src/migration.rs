@@ -1,5 +1,5 @@
 use crate::strutil::str_eq;
-use crate::{events::*, MigrationPlan, UpgradeError, UpgradeProposal};
+use crate::{MigrationPlan, UpgradeError, UpgradeProposal};
 use soroban_sdk::{Env, String, Vec};
 
 /// Execute pre-upgrade validation checks
@@ -35,54 +35,10 @@ pub fn execute_post_upgrade_migration(
     env: &Env,
     migration_plan: &MigrationPlan,
 ) -> Result<(), UpgradeError> {
-    let total_items = migration_plan.estimated_items;
-    let mut processed_items = 0u32;
-    let mut total_gas_used = 0u64;
-
-    // Execute data transformations
-    for transformation in migration_plan.data_transformations.iter() {
-        let items_in_batch = execute_data_transformation(env, &transformation)?;
-        processed_items += items_in_batch;
-
-        // Soroban exposes no in-contract gas meter, so charge each batch with
-        // the same cost model `estimate_migration_gas` uses for proposals.
-        let gas_used = crate::GAS_MIGRATION_STEP_OVERHEAD
-            + crate::GAS_MIGRATION_PER_ITEM * items_in_batch as u64;
-        total_gas_used += gas_used;
-
-        // Emit progress event
-        env.events().publish(
-            (
-                soroban_sdk::symbol_short!("upgrade"),
-                soroban_sdk::symbol_short!("progress"),
-            ),
-            MigrationProgressEvent {
-                phase: transformation,
-                items_processed: processed_items,
-                total_items,
-                gas_used,
-            },
-        );
-    }
-
-    // Execute post-migration validations
-    for validation in migration_plan.post_migration_validations.iter() {
-        execute_post_migration_validation(env, &validation)?;
-    }
-
-    // Emit completion event
-    env.events().publish(
-        (
-            soroban_sdk::symbol_short!("upgrade"),
-            soroban_sdk::symbol_short!("complete"),
-        ),
-        MigrationCompleteEvent {
-            version: version.clone(),
-            delegated_transformations: migration_plan.data_transformations.clone(),
-            delegated_validations: migration_plan.post_migration_validations.clone(),
-            estimated_items: migration_plan.estimated_items,
-        },
-    );
+    // The upgrade manager cannot access another contract's storage. The
+    // upgraded contract executes these steps in its own post-upgrade hook.
+    let _ = (env, migration_plan);
+    Ok(())
 }
 
 /// Execute a single validation check

@@ -49,6 +49,13 @@ const baseEventSchema = z.object({
   version: z.number().int().min(1),
   globalSeq: z.number().int().optional(),
   taskSeq: z.number().int().optional(),
+  meta: z
+    .object({
+      version: z.number().int().positive(),
+      contract: z.string().min(1),
+      ledgerTimestamp: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -84,9 +91,11 @@ const v1PaymentReleasedPayload = z.object({
 
 const v1TaskCompletedPayload = z.object({}).optional();
 
-const v1TaskFailedPayload = z.object({
-  error: z.string().optional(),
-}).optional();
+const v1TaskFailedPayload = z
+  .object({
+    error: z.string().optional(),
+  })
+  .optional();
 
 // ---------------------------------------------------------------------------
 // Version 2 payload schemas — new fields added behind version bump
@@ -128,10 +137,12 @@ const v2PaymentReleasedPayload = v1PaymentReleasedPayload.extend({
   ledgerSequence: z.number().int().positive().optional(),
 });
 
-const v2TaskCompletedPayload = z.object({
-  /** Total duration from task creation to completion in milliseconds. */
-  durationMs: z.number().int().nonnegative().optional(),
-}).optional();
+const v2TaskCompletedPayload = z
+  .object({
+    /** Total duration from task creation to completion in milliseconds. */
+    durationMs: z.number().int().nonnegative().optional(),
+  })
+  .optional();
 
 const v2TaskFailedPayload = z.object({
   error: z.string().optional(),
@@ -235,7 +246,9 @@ export function validateEvent(event: {
   if (!versionSchemas) {
     return {
       valid: false,
-      errors: [`Unknown event version: ${version}. Known versions: ${Object.keys(schemasByVersion).join(', ')}`],
+      errors: [
+        `Unknown event version: ${version}. Known versions: ${Object.keys(schemasByVersion).join(', ')}`,
+      ],
     };
   }
 
@@ -252,7 +265,7 @@ export function validateEvent(event: {
   }
 
   const errors = result.error.issues.map(
-    (issue) => `${type}.payload.${issue.path.join('.')}: ${issue.message}`,
+    (issue) => `${type}.payload.${issue.path.join('.')}: ${issue.message}`
   );
 
   return { valid: false, errors };
@@ -270,12 +283,10 @@ export function validateEvent(event: {
  */
 export function migrateEvent<T extends { version: number; payload?: unknown; type?: string }>(
   event: T,
-  targetVersion: number,
+  targetVersion: number
 ): T {
   if (targetVersion < event.version) {
-    throw new Error(
-      `Cannot downgrade event from version ${event.version} to ${targetVersion}`,
-    );
+    throw new Error(`Cannot downgrade event from version ${event.version} to ${targetVersion}`);
   }
 
   if (targetVersion === event.version) {
@@ -289,7 +300,7 @@ export function migrateEvent<T extends { version: number; payload?: unknown; typ
 
   log.debug(
     { fromVersion: event.version, toVersion: targetVersion, type: event.type },
-    'event migrated to newer schema version',
+    'event migrated to newer schema version'
   );
 
   return migrated;
@@ -299,10 +310,7 @@ export function migrateEvent<T extends { version: number; payload?: unknown; typ
  * Get the Zod schema for a specific event type and version.
  * Returns undefined if the combination is not registered.
  */
-export function getSchema(
-  eventType: EventType,
-  version: number,
-): z.ZodType<any> | undefined {
+export function getSchema(eventType: EventType, version: number): z.ZodType<any> | undefined {
   return schemasByVersion[version]?.[eventType];
 }
 
@@ -310,7 +318,9 @@ export function getSchema(
  * Get all registered versions for an event type.
  */
 export function getRegisteredVersions(): number[] {
-  return Object.keys(schemasByVersion).map(Number).sort((a, b) => a - b);
+  return Object.keys(schemasByVersion)
+    .map(Number)
+    .sort((a, b) => a - b);
 }
 
 /**
