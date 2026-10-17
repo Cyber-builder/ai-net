@@ -14,6 +14,13 @@ pub const MAX_CLEANUP_BATCH: u32 = 100;
 pub const DEFAULT_CLEANUP_BATCH: u32 = 50;
 pub const CONTRACT_VERSION: &str = "1.0.0";
 
+/// Maximum number of records allowed under a single code index.
+pub const MAX_CODE_INDEX_SIZE: u32 = 500;
+/// Default TTL threshold (ledgers remaining) below which we extend.
+pub const TTL_THRESHOLD: u32 = 100_000;
+/// Target TTL after extension (~31 days at 5s ledgers).
+pub const TTL_EXTEND_TO: u32 = 535_680;
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -40,13 +47,16 @@ pub enum Error {
     Unauthorized = 7,
     UpgradeFailed = 8,
     RollbackNotAvailable = 9,
+    /// Secondary index capacity reached for an error code.
+    MaxCapacityReached = 10,
 }
 
 #[contract]
 pub struct ErrorRegistryContract;
 
-fn read_admin(env: &Env) -> Result<Address, Error> {
-    env.storage()
+fn require_admin(env: &Env) -> Result<Address, Error> {
+    let admin: Address = env
+        .storage()
         .instance()
         .get(&DataKey::Admin)
         .ok_or(Error::NotInitialized)?;
@@ -339,7 +349,7 @@ impl ErrorRegistryContract {
         }
         env.storage()
             .persistent()
-            .get(&DataKey::Record(error_id))
+            .get(&key)
             .filter(|record: &ErrorRecord| is_active(now, record))
     }
 
