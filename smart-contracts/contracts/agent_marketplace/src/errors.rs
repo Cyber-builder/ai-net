@@ -24,6 +24,10 @@ pub enum Error {
     AssetMismatch = 14,
     /// An amount is negative or not representable in the asset's decimals.
     InvalidAmount = 15,
+    /// The queued action's timelock delay has not elapsed yet.
+    TimelockNotElapsed = 16,
+    /// No queued admin action exists with the given id.
+    ActionNotQueued = 17,
 }
 
 impl Error {
@@ -42,6 +46,8 @@ impl Error {
             13 => Some(Error::AssetNotConfigured),
             14 => Some(Error::AssetMismatch),
             15 => Some(Error::InvalidAmount),
+            16 => Some(Error::TimelockNotElapsed),
+            17 => Some(Error::ActionNotQueued),
             _ => None,
         }
     }

@@ -4,7 +4,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, Env, IntoVal, Symbol, TryFromVal, TryIntoVal, Val,
 };
 
@@ -26,6 +26,13 @@ fn setup_with_admin() -> (Env, AgentMarketplaceContractClient<'static>, Address)
     (env, client, admin)
 }
 
+/// Queue `action`, wait out the timelock and execute it.
+fn run_action(env: &Env, client: &AgentMarketplaceContractClient<'_>, action: AdminAction) {
+    let id = client.queue_action(&action);
+    env.ledger().with_mut(|l| l.timestamp += TIMELOCK_DELAY);
+    client.execute_action(&id);
+}
+
 /// Configure a test Stellar Asset Contract as the payment asset (initialising
 /// the marketplace first if needed), fund `payer`, and return the asset.
 fn pay_asset(env: &Env, client: &AgentMarketplaceContractClient<'_>, payer: &Address) -> Address {
@@ -36,7 +43,7 @@ fn pay_asset(env: &Env, client: &AgentMarketplaceContractClient<'_>, payer: &Add
         Some(asset) => asset,
         None => {
             let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
-            client.set_payment_asset(&sac.address(), &7);
+            run_action(env, client, AdminAction::SetPaymentAsset(sac.address(), 7));
             sac.address()
         }
     };
@@ -457,7 +464,7 @@ fn pause_blocks_listing() {
 fn unpause_allows_listing() {
     let (env, client, _admin) = setup_with_admin();
     client.pause();
-    client.unpause();
+    run_action(&env, &client, AdminAction::Unpause);
 
     let owner = Address::generate(&env);
     client.list_service(
@@ -474,11 +481,11 @@ fn unpause_allows_listing() {
 
 #[test]
 fn is_paused_reflects_state() {
-    let (_env, client, _admin) = setup_with_admin();
+    let (env, client, _admin) = setup_with_admin();
     assert!(!client.is_paused());
     client.pause();
     assert!(client.is_paused());
-    client.unpause();
+    run_action(&env, &client, AdminAction::Unpause);
     assert!(!client.is_paused());
 }
 
@@ -720,11 +727,114 @@ fn negative_auth_pause() {
 }
 
 #[test]
-fn negative_auth_unpause() {
+fn negative_auth_queue_action() {
     let (env, client, _admin) = setup_with_admin();
     client.pause();
     env.mock_auths(&[]);
-    assert_eq!(client.try_unpause(), Err(Ok(Error::Unauthorized)));
+    assert_eq!(
+        client.try_queue_action(&AdminAction::Unpause),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn execute_before_delay_reverts_and_after_succeeds() {
+    let (env, client, _admin) = setup_with_admin();
+    client.pause();
+    let id = client.queue_action(&AdminAction::Unpause);
+    assert_eq!(
+        client.try_execute_action(&id),
+        Err(Ok(Error::TimelockNotElapsed))
+    );
+    assert!(client.is_paused());
+    env.ledger().with_mut(|l| l.timestamp += TIMELOCK_DELAY);
+    client.execute_action(&id);
+    assert!(!client.is_paused());
+    // An executed action cannot be replayed.
+    assert_eq!(
+        client.try_execute_action(&id),
+        Err(Ok(Error::ActionNotQueued))
+    );
+}
+
+#[test]
+fn cancel_queued_action() {
+    let (env, client, _admin) = setup_with_admin();
+    client.pause();
+    let id = client.queue_action(&AdminAction::Unpause);
+    client.cancel_action(&id);
+    env.ledger().with_mut(|l| l.timestamp += TIMELOCK_DELAY);
+    assert_eq!(
+        client.try_execute_action(&id),
+        Err(Ok(Error::ActionNotQueued))
+    );
+    assert_eq!(
+        client.try_cancel_action(&id),
+        Err(Ok(Error::ActionNotQueued))
+    );
+    assert!(client.is_paused());
+}
+
+#[test]
+fn queue_execute_cancel_emit_events() {
+    let (env, client, _admin) = setup_with_admin();
+    let eta = env.ledger().timestamp() + TIMELOCK_DELAY;
+    let id = client.queue_action(&AdminAction::Unpause);
+    let topics = |env: &Env, name: &str| -> soroban_sdk::Vec<Val> {
+        (symbol_short!("market"), Symbol::new(env, name)).into_val(env)
+    };
+    let events = env.events().all();
+    let (_, t, d) = events.last().unwrap();
+    assert_eq!(t, topics(&env, "queued"));
+    assert_eq!(<(u32, u64)>::try_from_val(&env, &d).unwrap(), (id, eta));
+
+    client.cancel_action(&id);
+    let events = env.events().all();
+    let (_, t, d) = events.last().unwrap();
+    assert_eq!(t, topics(&env, "cancelled"));
+    assert_eq!(u32::try_from_val(&env, &d).unwrap(), id);
+
+    let id = client.queue_action(&AdminAction::Unpause);
+    env.ledger().with_mut(|l| l.timestamp += TIMELOCK_DELAY);
+    client.execute_action(&id);
+    let events = env.events().all();
+    let (_, t, d) = events.last().unwrap();
+    assert_eq!(t, topics(&env, "executed"));
+    assert_eq!(u32::try_from_val(&env, &d).unwrap(), id);
+}
+
+/// Every mutating entrypoint must reject while paused. Add new mutating
+/// functions here so a missing pause guard fails this test.
+#[test]
+fn paused_state_rejects_all_mutating_entrypoints() {
+    let (env, client, _admin) = setup_with_admin();
+    let a = Address::generate(&env);
+    let sym = |s: &str| Symbol::new(&env, s);
+    client.pause();
+
+    let paused = Err(Ok(Error::ContractPaused));
+    assert_eq!(client.try_set_admin(&a), paused);
+    assert_eq!(
+        client.try_list_service(&sym("s"), &sym("a"), &a, &sym("c"), &1, &1, &1),
+        paused
+    );
+    assert_eq!(
+        client.try_book_agent(&sym("s"), &a, &a, &1, &sym("b")),
+        paused
+    );
+    assert_eq!(client.try_complete_booking(&sym("b")), paused);
+    assert_eq!(client.try_cancel_booking(&sym("b")), paused);
+    assert_eq!(client.try_rate_booking(&sym("b"), &5), paused);
+
+    run_action(&env, &client, AdminAction::Unpause);
+    assert_ne!(client.try_set_admin(&a), paused);
+    assert_ne!(
+        client.try_list_service(&sym("s"), &sym("a"), &a, &sym("c"), &1, &1, &1),
+        paused
+    );
+    assert_ne!(client.try_complete_booking(&sym("b")), paused);
+    assert_ne!(client.try_cancel_booking(&sym("b")), paused);
+    assert_ne!(client.try_rate_booking(&sym("b"), &5), paused);
 }
 
 // ── Token escrow ─────────────────────────────────────────────────────────────
@@ -809,7 +919,11 @@ fn booking_with_wrong_asset_is_rejected() {
         Err(Ok(Error::AssetMismatch))
     );
     assert_eq!(
-        client.try_set_payment_asset(&other.address(), &6),
+        {
+            let id = client.queue_action(&AdminAction::SetPaymentAsset(other.address(), 6));
+            env.ledger().with_mut(|l| l.timestamp += TIMELOCK_DELAY);
+            client.try_execute_action(&id)
+        },
         Err(Ok(Error::AssetMismatch))
     );
 }
@@ -837,4 +951,111 @@ fn stroop_conversion_respects_decimals() {
     assert_eq!(stroops_to_units(5, 9), Ok(500));
     assert_eq!(stroops_to_units(1_000, 4), Ok(1));
     assert_eq!(stroops_to_units(1_001, 4), Err(Error::InvalidAmount));
+}
+
+// ── Arithmetic fuzzing ───────────────────────────────────────────────────────
+
+/// Deterministic LCG, as in `agent_bidding::property_tests`.
+struct Rng(u64);
+
+impl Rng {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.0
+    }
+
+    fn next_i128(&mut self) -> i128 {
+        ((self.next_u64() as i128) << 64) | self.next_u64() as i128
+    }
+}
+
+/// Smoke mode runs 1_000 iterations; set `FUZZ_ITERS` for a long local run.
+fn fuzz_iters() -> u64 {
+    std::env::var("FUZZ_ITERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_000)
+}
+
+/// Committed corpus of boundary inputs, always replayed before random ones.
+const FUZZ_CORPUS: [i128; 8] = [
+    i128::MIN,
+    -1,
+    0,
+    1,
+    10_000_000,
+    i128::MAX - 1,
+    i128::MAX,
+    1 << 100,
+];
+
+fn check_stroops_to_units(amount: i128, decimals: u32) {
+    match stroops_to_units(amount, decimals) {
+        Ok(units) => {
+            // Never negative, and converting back is exact: no value is created
+            // or lost, and nothing is rounded.
+            assert!(amount >= 0 && units >= 0);
+            if decimals >= STROOP_DECIMALS {
+                let f = 10i128.pow(decimals - STROOP_DECIMALS);
+                assert_eq!(units / f, amount);
+                assert_eq!(units % f, 0);
+            } else {
+                let f = 10i128.pow(STROOP_DECIMALS - decimals);
+                assert_eq!(units * f, amount);
+            }
+        }
+        Err(e) => {
+            // Overflow, negative amounts and inexact amounts fail cleanly.
+            assert_eq!(e, Error::InvalidAmount);
+        }
+    }
+}
+
+#[test]
+fn fuzz_stroops_to_units_never_panics_or_leaks_value() {
+    for &amount in FUZZ_CORPUS.iter() {
+        for decimals in [0, 6, 7, 8, 18, 38, 39, u32::MAX] {
+            check_stroops_to_units(amount, decimals);
+        }
+    }
+    let mut rng = Rng(0x5eed);
+    for _ in 0..fuzz_iters() {
+        let decimals = (rng.next_u64() % 40) as u32;
+        // Mix full-range values with small ones so the exact paths are hit too.
+        let amount = match rng.next_u64() % 3 {
+            0 => rng.next_i128(),
+            1 => (rng.next_u64() % 1_000_000_000) as i128,
+            _ => (rng.next_u64() % 1_000) as i128 * 10i128.pow((rng.next_u64() % 8) as u32),
+        };
+        check_stroops_to_units(amount, decimals);
+    }
+}
+
+#[test]
+fn fuzz_escrow_release_and_refund_conserve_funds() {
+    let (env, client, _) = setup_with_admin();
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let listing_id = list(&env, &client, &owner);
+    let asset = pay_asset(&env, &client, &payer);
+    soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&payer, &1_000_000_000);
+    let total = balance(&env, &client, &payer);
+
+    let mut rng = Rng(0xe5c0);
+    for i in 0..fuzz_iters().min(100) {
+        let amount = 1_000_000 + (rng.next_u64() % 1_000_000) as i128;
+        let booking_id = Symbol::new(&env, &std::format!("bk_fz{i}"));
+        client.book_agent(&listing_id, &payer, &asset, &amount, &booking_id);
+        if rng.next_u64() % 2 == 0 {
+            client.complete_booking(&booking_id);
+        } else {
+            client.cancel_booking(&booking_id);
+        }
+        // Escrow is always fully paid out and the total supply is unchanged.
+        assert_eq!(balance(&env, &client, &client.address), 0);
+        assert_eq!(
+            balance(&env, &client, &payer) + balance(&env, &client, &owner),
+            total
+        );
+    }
 }

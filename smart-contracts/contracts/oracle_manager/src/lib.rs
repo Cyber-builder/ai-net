@@ -662,6 +662,31 @@ mod test {
         f.client.set_oracle(&Some(oracle_addr));
     }
 
+    /// Every mutating entrypoint must reject while paused. Add new mutating
+    /// functions here so a missing pause guard fails this test.
+    #[test]
+    fn paused_state_rejects_all_mutating_entrypoints() {
+        let f = fixture();
+        init(&f);
+        let a = Address::generate(&f.env);
+        f.client.pause();
+
+        let paused = Err(Ok(Error::ContractPaused));
+        assert_eq!(f.client.try_set_admin(&a), paused);
+        assert_eq!(f.client.try_set_oracle(&None), paused);
+        assert_eq!(
+            f.client.try_set_fallback_price(&f.pair, &5_000_000i128),
+            paused
+        );
+        assert_eq!(f.client.try_resolve_price(&f.pair).map(|_| ()), paused);
+
+        f.client.unpause();
+        f.client.set_oracle(&None);
+        f.client.set_fallback_price(&f.pair, &5_000_000i128);
+        f.client.resolve_price(&f.pair);
+        f.client.set_admin(&a);
+    }
+
     #[test]
     fn negative_auth_tests() {
         let f = fixture();
