@@ -30,6 +30,10 @@ pub enum DataKey {
     PaymentAsset,
     /// Decimals of the configured payment asset.
     AssetDecimals,
+    /// Number of admin actions ever queued (next action id).
+    ActionCount,
+    /// Admin action waiting out the timelock.
+    QueuedAction(u32),
 }
 
 #[contract]
@@ -56,6 +60,9 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// Seconds a queued admin action must wait before it can be executed.
+pub const TIMELOCK_DELAY: u64 = 86_400;
 
 /// Decimals in which listing prices (`price_stroops`) are denominated.
 pub const STROOP_DECIMALS: u32 = 7;
@@ -149,29 +156,79 @@ impl AgentMarketplaceContract {
         Ok(())
     }
 
-    /// Admin: unpause.
-    pub fn unpause(env: Env) -> Result<(), Error> {
+    /// Admin: queue a privileged action (unpause or payment-asset change).
+    /// It becomes executable after [`TIMELOCK_DELAY`] and can be cancelled
+    /// while queued. Pausing stays immediate so it can be used as an
+    /// emergency stop. Returns the action id.
+    pub fn queue_action(env: Env, action: AdminAction) -> Result<u32, Error> {
         require_admin(&env)?;
-        env.storage().instance().set(&DataKey::Paused, &false);
+        let id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActionCount)
+            .unwrap_or(0);
+        let eta = env.ledger().timestamp() + TIMELOCK_DELAY;
+        env.storage()
+            .instance()
+            .set(&DataKey::ActionCount, &(id + 1));
+        env.storage()
+            .persistent()
+            .set(&DataKey::QueuedAction(id), &QueuedAction { action, eta });
+        env.events().publish(
+            (symbol_short!("market"), symbol_short!("queued")),
+            (id, eta),
+        );
+        Ok(id)
+    }
+
+    /// Admin: execute a queued action once its delay has elapsed.
+    pub fn execute_action(env: Env, id: u32) -> Result<(), Error> {
+        require_admin(&env)?;
+        let key = DataKey::QueuedAction(id);
+        let queued: QueuedAction = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ActionNotQueued)?;
+        if env.ledger().timestamp() < queued.eta {
+            return Err(Error::TimelockNotElapsed);
+        }
+        env.storage().persistent().remove(&key);
+        match queued.action {
+            AdminAction::Unpause => {
+                env.storage().instance().set(&DataKey::Paused, &false);
+                env.events()
+                    .publish((symbol_short!("market"), symbol_short!("unpaused")), ());
+            }
+            AdminAction::SetPaymentAsset(asset, decimals) => {
+                if token::Client::new(&env, &asset).decimals() != decimals {
+                    return Err(Error::AssetMismatch);
+                }
+                env.storage().instance().set(&DataKey::PaymentAsset, &asset);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AssetDecimals, &decimals);
+                env.events().publish(
+                    (symbol_short!("market"), symbol_short!("asset_set")),
+                    (asset, decimals),
+                );
+            }
+        }
         env.events()
-            .publish((symbol_short!("market"), symbol_short!("unpaused")), ());
+            .publish((symbol_short!("market"), symbol_short!("executed")), id);
         Ok(())
     }
 
-    /// Admin: configure the Stellar Asset Contract bookings are paid in.
-    /// `decimals` must match the token's own decimals, otherwise
-    /// [`Error::AssetMismatch`].
-    pub fn set_payment_asset(env: Env, asset: Address, decimals: u32) -> Result<(), Error> {
+    /// Admin: cancel a queued action before it is executed.
+    pub fn cancel_action(env: Env, id: u32) -> Result<(), Error> {
         require_admin(&env)?;
-        if token::Client::new(&env, &asset).decimals() != decimals {
-            return Err(Error::AssetMismatch);
+        let key = DataKey::QueuedAction(id);
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::ActionNotQueued);
         }
-        env.storage().instance().set(&DataKey::PaymentAsset, &asset);
-        env.storage().instance().set(&DataKey::AssetDecimals, &decimals);
-        env.events().publish(
-            (symbol_short!("market"), symbol_short!("asset_set")),
-            (asset, decimals),
-        );
+        env.storage().persistent().remove(&key);
+        env.events()
+            .publish((symbol_short!("market"), symbol_short!("cancelled")), id);
         Ok(())
     }
 

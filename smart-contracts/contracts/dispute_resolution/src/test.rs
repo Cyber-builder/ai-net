@@ -455,6 +455,35 @@ fn negative_auth_unpause() {
     assert_eq!(client.try_unpause(), Err(Ok(Error::Unauthorized)));
 }
 
+/// Every mutating entrypoint must reject while paused. Add new mutating
+/// functions here so a missing pause guard fails this test.
+#[test]
+fn paused_state_rejects_all_mutating_entrypoints() {
+    let (env, client, _admin) = setup_with_admin();
+    let a = Address::generate(&env);
+    let task = Symbol::new(&env, "task1");
+    client.pause();
+
+    let paused = Err(Ok(Error::ContractPaused));
+    assert_eq!(client.try_set_admin(&a), paused);
+    assert_eq!(
+        client.try_set_voters(&soroban_sdk::vec![&env, a.clone()]),
+        paused
+    );
+    assert_eq!(client.try_set_reputation(&a, &3), paused);
+    assert_eq!(client.try_set_agent_bond(&a, &100), paused);
+    assert_eq!(client.try_set_agent_registry(&a), paused);
+    assert_eq!(client.try_set_task_escrow(&task, &100), paused);
+
+    client.unpause();
+    client.set_voters(&soroban_sdk::vec![&env, a.clone()]);
+    client.set_reputation(&a, &3);
+    client.set_agent_bond(&a, &100);
+    client.set_agent_registry(&a);
+    client.set_task_escrow(&task, &100);
+    client.set_admin(&a);
+}
+
 #[test]
 fn negative_auth_set_voters() {
     let (env, client, _admin) = setup_with_admin();
