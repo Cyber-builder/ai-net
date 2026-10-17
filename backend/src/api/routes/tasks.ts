@@ -10,12 +10,11 @@ import { createLogger } from "../../utils/logger";
 import { validate } from "../middleware/validate";
 import { rateLimitMiddleware } from "../middleware/rateLimit";
 import { idempotencyMiddleware } from "../middleware/idempotency";
-import { ValidationError, NotFoundError, AppError, RateLimitError, ForbiddenError, ConflictError } from "../../errors";
+import { ValidationError, NotFoundError, AppError, ForbiddenError, ConflictError } from "../../errors";
+import { assertDailyTaskQuota } from "../../services/quota/dailyQuota";
 
 import { getGlobalJobQueue, type JobQueue, type JobPriority } from "../../queue";
 import { config } from "../../config";
-
-import { getConfig } from "../../config";
 
 // ── Validation config ────────────────────────────────────────────────────────
 // Read at module load time so the value is stable for the lifetime of the
@@ -143,20 +142,11 @@ export function createTasksRouter(
         "anonymous";
 
       // ── Per-wallet daily quota ───────────────────────────────────────────────
-      const dailyTaskLimit = getConfig().DAILY_TASK_LIMIT_PER_WALLET;
-      if (dailyTaskLimit > 0 && walletPublicKey !== "anonymous") {
-        const db = createTaskDb(getTaskDb());
-        const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-        const { total } = db.list(walletPublicKey, 1, 1, { createdAfter: since });
-        if (total >= dailyTaskLimit) {
-          const correlationId = res.locals.correlationId as string | undefined;
-          throw new RateLimitError(
-            `Daily task limit reached (max ${dailyTaskLimit} per 24 hours)`,
-            { limit: dailyTaskLimit, window: "24h" },
-            correlationId,
-          );
-        }
-      }
+      // Throws a 429 RateLimitError and counts the rejection in the quota
+      // metrics when the wallet has spent its DAILY_TASK_LIMIT_PER_WALLET.
+      assertDailyTaskQuota(walletPublicKey, {
+        correlationId: res.locals.correlationId as string | undefined,
+      });
 
       const taskId = `task_${nanoid(12)}`;
       const dag = decompose(taskId, prompt);
