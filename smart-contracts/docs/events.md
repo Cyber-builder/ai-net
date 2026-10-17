@@ -115,6 +115,16 @@ USDC on Stellar) units and stroops are identical.
 | `("market", "svc_book")`  | `ServiceBookedEvent { booking_id, listing_id, client, escrow_amount }` | `client → contract` of `escrow_amount`           |
 | `("market", "svc_comp")`  | `ServiceCompletedEvent { booking_id, payment_released }`               | `contract → listing owner` of `payment_released` |
 | `("market", "svc_canc")`  | `ServiceCancelledEvent { booking_id, refund_amount }`                  | `contract → client` of `refund_amount`           |
+| `("market", "queued")`    | `(action_id: u32, eta: u64)`                                           | none                                             |
+| `("market", "executed")`  | `action_id: u32`                                                       | none                                             |
+| `("market", "cancelled")` | `action_id: u32`                                                       | none                                             |
+
+Admin actions that lift the pause (`Unpause`) or change the payment asset
+(`SetPaymentAsset`) go through a timelock: `queue_action` emits `queued` with
+the `eta` (ledger timestamp, `now + TIMELOCK_DELAY` = 86 400 s),
+`execute_action` reverts with `TimelockNotElapsed` before the `eta`, and
+`cancel_action` drops a queued action. `pause` stays immediate as an
+emergency stop.
 
 `book_agent` now takes an `asset: Address` argument; it must equal the
 configured asset or the call fails with `AssetMismatch` (14).
