@@ -445,6 +445,28 @@ The node exposes Prometheus-compatible metrics at `GET /metrics`:
 - `ainet_stellar_rpc_latency_seconds`: Latency of Stellar Horizon / Soroban RPC calls.
 - `ainet_active_agents`: Current count of active registered agents.
 
+#### Quota & token-budget metrics
+
+These expose how much of `DAILY_TASK_LIMIT_PER_WALLET` and `TASK_TOKEN_BUDGET`
+has been consumed, so you can see pressure building *before* clients start
+getting `429`s:
+
+- `ainet_wallet_daily_quota_limit`: Configured per-wallet daily task quota (`0` = disabled).
+- `ainet_wallet_daily_quota_wallets{bucket="..."}`: Wallets in the trailing 24h, by utilisation band.
+- `ainet_wallet_daily_quota_utilization_max`: Highest utilisation ratio reached by any wallet in 24h.
+- `ainet_wallet_daily_quota_rejections_total{bucket="..."}`: Quota `429`s served since process start.
+- `ainet_task_token_budget`: Configured per-task token budget.
+- `ainet_task_tokens_spent_total`: Tokens spent on settled tasks since process start.
+- `ainet_task_tokens_spent_daily` / `ainet_task_cost_usd_daily`: Tokens and USD spent in the trailing 24h.
+- `ainet_tasks_settled_daily` / `ainet_task_budget_exceeded_daily`: Tasks settled, and how many overran their budget, in the trailing 24h.
+
+Wallet addresses are never used as a label — wallets are aggregated into seven
+fixed utilisation bands, so label cardinality stays constant no matter how many
+wallets are active.
+
+> Full metric reference, PromQL recipes, Grafana panel snippet and ready-to-use
+> alert rules: **[docs/operations/quota-metrics.md](operations/quota-metrics.md)**.
+
 ### Example Prometheus Scrape Config
 
 Add to `/etc/prometheus/prometheus.yml`:

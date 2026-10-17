@@ -127,6 +127,27 @@ Prometheus text exposition endpoint for metrics scraping.
   ainet_up 1
   ```
 
+* **Quota and token-budget families** — also served on `GET /api/metrics`:
+
+  | Metric | Type | Labels |
+  |---|---|---|
+  | `ainet_wallet_daily_quota_limit` | gauge | — |
+  | `ainet_wallet_daily_quota_wallets` | gauge | `bucket` |
+  | `ainet_wallet_daily_quota_utilization_max` | gauge | — |
+  | `ainet_wallet_daily_quota_rejections_total` | counter | `bucket` |
+  | `ainet_wallet_daily_quota_source_errors` | gauge | — |
+  | `ainet_task_token_budget` | gauge | — |
+  | `ainet_task_tokens_spent_total` | counter | — |
+  | `ainet_task_tokens_spent_daily` | gauge | — |
+  | `ainet_tasks_settled_daily` | gauge | — |
+  | `ainet_task_cost_usd_daily` | gauge | — |
+  | `ainet_task_budget_exceeded_daily` | gauge | — |
+
+  The `bucket` label takes one of seven fixed values — `disabled`, `0-25%`,
+  `25-50%`, `50-75%`, `75-100%`, `at-limit`, `over-limit` — so every labelled
+  family emits a constant 7 series. Wallet addresses are never used as labels.
+  See [operations/quota-metrics.md](operations/quota-metrics.md).
+
 #### `GET /api/admin/flags`
 List feature flags with current enabled status and resolution source (`runtime`, `env`, or `default`). Requires admin API key.
 

@@ -11,8 +11,8 @@ import { validate } from "../../middleware/validate";
 import { rateLimitMiddleware } from "../../middleware/rateLimit";
 import { idempotencyMiddleware } from "../../middleware/idempotency";
 import { currentTraceId } from "../../../services/traceContext";
-import { getConfig } from "../../../config";
-import { RateLimitError, NotFoundError, ForbiddenError, ConflictError, ValidationError } from "../../../errors";
+import { assertDailyTaskQuota } from "../../../services/quota/dailyQuota";
+import { NotFoundError, ForbiddenError, ConflictError, ValidationError } from "../../../errors";
 import { taskStreamUrl } from "../stream";
 
 import { getGlobalJobQueue, type JobQueue, type JobPriority } from "../../../queue";
@@ -59,20 +59,11 @@ export function createV2TasksRouter(
       (req.headers["walletpublickey"] as string | undefined) ??
       "anonymous";
 
-    const dailyTaskLimit = getConfig().DAILY_TASK_LIMIT_PER_WALLET;
-    if (dailyTaskLimit > 0 && walletPublicKey !== "anonymous") {
-      const db = createTaskDb(getTaskDb());
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const { total } = db.list(walletPublicKey, 1, 1, { createdAfter: since });
-      if (total >= dailyTaskLimit) {
-        const correlationId = res.locals.correlationId as string | undefined;
-        throw new RateLimitError(
-          `Daily task limit reached (max ${dailyTaskLimit} per 24 hours)`,
-          { limit: dailyTaskLimit, window: "24h" },
-          correlationId,
-        );
-      }
-    }
+    // Throws a 429 RateLimitError and counts the rejection in the quota metrics
+    // when the wallet has spent its DAILY_TASK_LIMIT_PER_WALLET.
+    assertDailyTaskQuota(walletPublicKey, {
+      correlationId: res.locals.correlationId as string | undefined,
+    });
 
     const taskId = `task_${nanoid(12)}`;
     const dag = decompose(taskId, prompt);

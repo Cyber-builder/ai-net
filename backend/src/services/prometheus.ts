@@ -12,6 +12,8 @@
  *  • Agent count by status
  *  • Payment amount counters (locked, released, refunded)
  *  • Venice AI / LLM latency histogram
+ *  • Per-wallet daily quota gauges and rejection counter (Issue #738)
+ *  • Task token budget / spend gauges
  *  • Process uptime and memory gauges
  *
  * The collector reads live data from the existing {@link MetricsService},
@@ -21,6 +23,7 @@
 import os from 'os';
 import { createLogger } from '../utils/logger';
 import { metricsService } from './metrics';
+import { quotaMetricsRegistry } from './quota/metrics';
 import type { RequestSample } from './metrics.types';
 
 const logger = createLogger({ component: 'prometheus' });
@@ -283,6 +286,18 @@ function collectLlmMetrics(samples: readonly RequestSample[]): string {
   return out;
 }
 
+function collectQuotaMetrics(): string {
+  // Wallet addresses are never a label here: the registry folds them into a
+  // fixed set of utilisation bands, so this family's cardinality is capped no
+  // matter how many wallets are active. See services/quota/metrics.ts.
+  try {
+    return quotaMetricsRegistry().render();
+  } catch (err) {
+    logger.debug({ err }, 'quota metrics unavailable');
+    return '';
+  }
+}
+
 function collectProcessMetrics(): string {
   const mem = process.memoryUsage();
   const uptimeSeconds = Math.floor(process.uptime());
@@ -329,6 +344,8 @@ export function generatePrometheusMetrics(): string {
   body += collectQueueMetrics();
   body += '\n';
   body += collectLlmMetrics(samples);
+  body += '\n';
+  body += collectQuotaMetrics();
   body += '\n';
   body += collectProcessMetrics();
 
