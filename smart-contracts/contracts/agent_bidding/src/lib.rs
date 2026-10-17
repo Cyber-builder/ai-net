@@ -99,7 +99,7 @@ pub use types::{
     CLAIM_WINDOW_SECS, COMMITMENT_DOMAIN, DEFAULT_BIDDING_DURATION_SECS,
     DEFAULT_REVEAL_DURATION_SECS, MAX_BIDDERS, MAX_BID_PRICE, MAX_PHASE_DURATION_SECS,
     MAX_REPUTATION, MAX_TERMS_LEN, MIN_PHASE_DURATION_SECS, PRICE_WEIGHT, REPUTATION_WEIGHT,
-    SCORE_SCALE,
+    SCORE_SCALE, ANTI_SNIPE_EXTENSION_SECS, ANTI_SNIPE_WINDOW_SECS,
 };
 
 use soroban_sdk::{
@@ -682,6 +682,23 @@ impl AgentBiddingContract {
         extend_ttl_for_key(&env, &bidders_key);
 
         auction.bid_count += 1;
+
+        // Prevent a last-second commitment from ending the bidding window
+        // before other participants can observe and respond. Cap the moving
+        // deadline at the contract's maximum phase horizon so repeated bids
+        // cannot hold funds indefinitely.
+        if auction.deadline.saturating_sub(now) <= ANTI_SNIPE_WINDOW_SECS {
+            let cap = auction
+                .created_at
+                .saturating_add(MAX_PHASE_DURATION_SECS);
+            let extension = auction
+                .deadline
+                .saturating_add(ANTI_SNIPE_EXTENSION_SECS)
+                .min(cap)
+                .saturating_sub(auction.deadline);
+            auction.deadline = auction.deadline.saturating_add(extension);
+            auction.reveal_deadline = auction.reveal_deadline.saturating_add(extension);
+        }
         save_auction(&env, &auction);
 
         // Bid position (1-based) within this auction, stamped before the
