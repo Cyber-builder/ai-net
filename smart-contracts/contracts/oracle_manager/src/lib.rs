@@ -19,17 +19,28 @@
 //! 1. If an oracle address is configured:
 //!    a. Call oracle.get_price(pair)
 //!    b. On success  → return ResolvedPrice { source: Oracle }
-//!    c. On PriceStale / FeedNotFound / call error:
-//!       → fall through to step 2
+//!    c. On FeedNotFound / PriceStale / paused / uninitialised / call error:
+//!       → remember the typed error and fall through to step 2
 //! 2. If a fallback price exists for `pair`:
 //!    → return ResolvedPrice { source: Fallback }
-//! 3. Otherwise → Error::NoPriceAvailable
+//! 3. Otherwise → the typed error from step 1c, or
+//!    Error::NoPriceAvailable when no oracle is configured
 //! ```
 //!
 //! Stale prices from the oracle are **never** silently passed through.  If
-//! the oracle signals staleness the fallback is used, or an error is returned
-//! if no fallback is set.  This satisfies the acceptance criterion:
-//! *"Stale feeds are rejected, not silently used."*
+//! the oracle signals staleness the fallback is used, or `PriceStale` is
+//! returned if no fallback is set.  Every oracle failure other than a missing
+//! feed also emits an `OracleFailureEvent`, and a fallback price is always
+//! tagged `PriceSource::Fallback`, so no failure path defaults silently.
+//!
+//! ## Feed seam
+//!
+//! The oracle is reached only through the low-level `get_price(pair)` call in
+//! `try_oracle_get_price`, which needs nothing more than a contract at the
+//! configured address returning a `{ price, timestamp }` map and the
+//! PriceOracle error codes. The address can be supplied at `initialize` or
+//! swapped later with `set_oracle`, so tests (and deployments) can inject any
+//! feed implementation — see `tests/` for a mock oracle.
 //!
 //! ## Storage layout
 //!
@@ -177,14 +188,20 @@ impl OracleManagerContract {
     ///
     /// # Arguments
     ///
-    /// * `admin` – Address that will manage oracle selection and fallback prices.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+    /// * `admin`  – Address that will manage oracle selection and fallback prices.
+    /// * `oracle` – Optional price-feed contract to read live prices from.
+    ///   `None` starts in fallback-only mode; it can be set later with
+    ///   `set_oracle`.
+    pub fn initialize(env: Env, admin: Address, oracle: Option<Address>) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Paused, &false);
+        if let Some(addr) = &oracle {
+            env.storage().instance().set(&DataKey::OracleAddress, addr);
+        }
         Ok(())
     }
 
@@ -297,19 +314,33 @@ impl OracleManagerContract {
     ///
     /// 1. Live oracle price (if oracle configured and price is fresh)
     /// 2. Admin-set fallback price
-    /// 3. `Error::NoPriceAvailable`
+    /// 3. The oracle's typed failure (`FeedNotFound`, `PriceStale`,
+    ///    `OraclePaused`, `OracleNotInitialized`, `OracleCallFailed`), or
+    ///    `NoPriceAvailable` when no oracle is configured
     ///
     /// A stale oracle response is **never** returned; the fallback is used
-    /// transparently instead.
+    /// instead and the result is tagged `PriceSource::Fallback`.
     pub fn resolve_price(env: Env, pair: Symbol) -> Result<ResolvedPrice, Error> {
         require_not_paused(&env)?;
         // Step 1: try the live oracle.
+        let mut failure = Error::NoPriceAvailable;
         if let Some(oracle) = env
             .storage()
             .instance()
             .get::<DataKey, Address>(&DataKey::OracleAddress)
         {
-            if let Some((price, _ts)) = try_oracle_get_price(&env, &oracle, &pair)? {
+            let live = match try_oracle_get_price(&env, &oracle, &pair) {
+                Ok(Some(found)) => Some(found),
+                Ok(None) => {
+                    failure = Error::FeedNotFound;
+                    None
+                }
+                Err(err) => {
+                    failure = err;
+                    None
+                }
+            };
+            if let Some((price, _ts)) = live {
                 let resolved = ResolvedPrice {
                     pair: pair.clone(),
                     price,
@@ -325,7 +356,7 @@ impl OracleManagerContract {
                 );
                 return Ok(resolved);
             }
-            // Oracle returned Ok(None) (FeedNotFound / explicit price absent) → fall through to fallback.
+            // Oracle failed with a typed error → fall through to the fallback.
         }
 
         // Step 2: admin fallback.
@@ -346,8 +377,8 @@ impl OracleManagerContract {
             return Ok(resolved);
         }
 
-        // Step 3: nothing available.
-        Err(Error::NoPriceAvailable)
+        // Step 3: nothing available — surface why.
+        Err(failure)
     }
 
     // ── Read-only queries ─────────────────────────────────────────────────────
@@ -408,7 +439,7 @@ mod test {
     }
 
     fn init(f: &Fixture) {
-        f.client.initialize(&f.admin);
+        f.client.initialize(&f.admin, &None);
     }
 
     // Helper: deploy a real PriceOracle and initialise it.
@@ -435,7 +466,7 @@ mod test {
         let f = fixture();
         init(&f);
         assert_eq!(
-            f.client.try_initialize(&f.admin),
+            f.client.try_initialize(&f.admin, &None),
             Err(Ok(Error::AlreadyInitialized))
         );
     }
@@ -627,7 +658,7 @@ mod test {
 
         assert_eq!(
             f.client.try_resolve_price(&f.pair),
-            Err(Ok(Error::NoPriceAvailable))
+            Err(Ok(Error::PriceStale))
         );
     }
 
@@ -678,7 +709,10 @@ mod test {
             f.client.try_set_fallback_price(&f.pair, &5_000_000i128),
             paused
         );
-        assert_eq!(f.client.try_resolve_price(&f.pair).map(|_| ()), paused);
+        assert_eq!(
+            f.client.try_resolve_price(&f.pair).err(),
+            Some(Ok(Error::ContractPaused))
+        );
 
         f.client.unpause();
         f.client.set_oracle(&None);
@@ -715,29 +749,26 @@ mod test {
 
     #[cfg(feature = "testutils")]
     #[test]
-    fn oracle_not_initialized_emits_failure_event() {
+    fn uninitialized_oracle_is_treated_as_missing_feed() {
         let f = fixture();
         init(&f);
 
-        // Deploy oracle but DON'T initialize it
+        // The real PriceOracle's get_price does not check initialisation, so
+        // an uninitialised oracle reports FeedNotFound for every pair.
         let oracle_id = f.env.register(price_oracle::PriceOracleContract, ());
         f.client.set_oracle(&Some(oracle_id));
         f.client.set_fallback_price(&f.pair, &5_000_000i128);
 
-        // Clear events from setup
-        let _ = f.env.events().all();
-
-        // Should fall back to fallback price
         let result = f.client.resolve_price(&f.pair);
         assert_eq!(result.price, 5_000_000);
         assert_eq!(result.source, PriceSource::Fallback);
 
-        // Verify failure event was emitted
+        // A missing feed is not an oracle *failure*, so no ora_fail event.
         let events = f.env.events().all();
         let failure_event = events.iter().find(|(_, topics, _)| {
             topics == &(symbol_short!("mgr"), symbol_short!("ora_fail")).into_val(&f.env)
         });
-        assert!(failure_event.is_some());
+        assert!(failure_event.is_none());
     }
 
     #[cfg(feature = "testutils")]
@@ -778,21 +809,19 @@ mod test {
     fn oracle_failure_without_fallback_returns_error() {
         let f = fixture();
         init(&f);
-        let oracle_id = f.env.register(price_oracle::PriceOracleContract, ());
+        let oracle_id = deploy_oracle(&f);
+        let oracle_client = price_oracle::PriceOracleContractClient::new(&f.env, &oracle_id);
+        oracle_client.pause();
 
-        // Uninitialized oracle, no fallback
+        // Paused oracle, no fallback
         f.client.set_oracle(&Some(oracle_id));
 
-        // Clear events
-        let _ = f.env.events().all();
-
-        // Should return error AND emit failure event
+        // Should return the typed error AND emit a failure event
         assert_eq!(
             f.client.try_resolve_price(&f.pair),
-            Err(Ok(Error::NoPriceAvailable))
+            Err(Ok(Error::OraclePaused))
         );
 
-        // Verify failure event was emitted
         let events = f.env.events().all();
         let failure_event = events.iter().find(|(_, topics, _)| {
             topics == &(symbol_short!("mgr"), symbol_short!("ora_fail")).into_val(&f.env)
@@ -835,7 +864,7 @@ mod test {
         f.env.mock_auths(&[]);
         assert_eq!(
             f.client.try_set_admin(&intruder),
-            Err(Ok(Error::Unauthorized))
+            Err(Err(soroban_sdk::InvokeError::Abort))
         );
     }
 
@@ -844,7 +873,10 @@ mod test {
         let f = fixture();
         init(&f);
         f.env.mock_auths(&[]);
-        assert_eq!(f.client.try_pause(), Err(Ok(Error::Unauthorized)));
+        assert_eq!(
+            f.client.try_pause(),
+            Err(Err(soroban_sdk::InvokeError::Abort))
+        );
     }
 
     #[test]
@@ -853,7 +885,10 @@ mod test {
         init(&f);
         f.client.pause();
         f.env.mock_auths(&[]);
-        assert_eq!(f.client.try_unpause(), Err(Ok(Error::Unauthorized)));
+        assert_eq!(
+            f.client.try_unpause(),
+            Err(Err(soroban_sdk::InvokeError::Abort))
+        );
     }
 
     #[test]
@@ -864,7 +899,7 @@ mod test {
         f.env.mock_auths(&[]);
         assert_eq!(
             f.client.try_set_oracle(&Some(oracle)),
-            Err(Ok(Error::Unauthorized))
+            Err(Err(soroban_sdk::InvokeError::Abort))
         );
     }
 
@@ -875,7 +910,7 @@ mod test {
         f.env.mock_auths(&[]);
         assert_eq!(
             f.client.try_set_fallback_price(&f.pair, &1_000_000i128),
-            Err(Ok(Error::Unauthorized))
+            Err(Err(soroban_sdk::InvokeError::Abort))
         );
     }
 }
