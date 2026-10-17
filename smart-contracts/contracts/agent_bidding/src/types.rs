@@ -65,6 +65,14 @@ pub const MAX_PHASE_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
 /// ledger close times, so it would function as a censorship tool.
 pub const MIN_PHASE_DURATION_SECS: u64 = 60;
 
+/// A bid submitted in the final five minutes extends the bidding window.
+pub const ANTI_SNIPE_WINDOW_SECS: u64 = 5 * 60;
+
+/// Extension applied by an eligible late bid. The reveal window moves with
+/// the bidding deadline so late bidders do not reduce the time available to
+/// reveal a commitment.
+pub const ANTI_SNIPE_EXTENSION_SECS: u64 = 5 * 60;
+
 /// Maximum allowed reputation score (percentage scale).
 pub const MAX_REPUTATION: u32 = 100;
 

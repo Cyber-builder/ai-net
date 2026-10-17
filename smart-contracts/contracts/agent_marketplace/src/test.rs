@@ -204,6 +204,77 @@ fn book_agent_success() {
     assert!(!booking.cancelled);
 }
 
+/// The marketplace holds the exact configured asset amount in escrow and
+/// releases it exactly once along each terminal lifecycle path.
+#[test]
+fn fee_accounting_and_booking_lifecycle_preserve_asset_balance() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    client.list_service(
+        &Symbol::new(&env, "svc_fee"),
+        &Symbol::new(&env, "agent_fee"),
+        &owner,
+        &Symbol::new(&env, "research"),
+        &1_000_000,
+        &200,
+        &24,
+    );
+    let asset = pay_asset(&env, &client, &payer);
+    let before = soroban_sdk::token::Client::new(&env, &asset).balance(&payer);
+
+    client.book_agent(
+        &Symbol::new(&env, "svc_fee"),
+        &payer,
+        &asset,
+        &1_000_000,
+        &Symbol::new(&env, "booking_fee"),
+    );
+    assert_eq!(balance(&env, &client, &payer), before - 1_000_000);
+    assert_eq!(balance(&env, &client, &client.address), 1_000_000);
+
+    client.complete_booking(&Symbol::new(&env, "booking_fee"));
+    assert_eq!(balance(&env, &client, &client.address), 0);
+    assert_eq!(balance(&env, &client, &owner), 1_000_000);
+    assert_eq!(
+        client.try_complete_booking(&Symbol::new(&env, "booking_fee")),
+        Err(Ok(Error::BookingAlreadyCompleted))
+    );
+}
+
+#[test]
+fn cancellation_refunds_full_escrow_and_cannot_be_replayed() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    client.list_service(
+        &Symbol::new(&env, "svc_refund"),
+        &Symbol::new(&env, "agent_refund"),
+        &owner,
+        &Symbol::new(&env, "research"),
+        &2_000_000,
+        &200,
+        &24,
+    );
+    let asset = pay_asset(&env, &client, &payer);
+    let before = balance(&env, &client, &payer);
+    let booking = Symbol::new(&env, "booking_refund");
+    client.book_agent(
+        &Symbol::new(&env, "svc_refund"),
+        &payer,
+        &asset,
+        &2_000_000,
+        &booking,
+    );
+    client.cancel_booking(&booking);
+    assert_eq!(balance(&env, &client, &payer), before);
+    assert_eq!(balance(&env, &client, &client.address), 0);
+    assert_eq!(
+        client.try_cancel_booking(&booking),
+        Err(Ok(Error::BookingAlreadyCancelled))
+    );
+}
+
 #[test]
 fn book_agent_insufficient_payment() {
     let (env, client) = setup();
