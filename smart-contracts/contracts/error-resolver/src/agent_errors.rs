@@ -24,8 +24,6 @@ pub enum DataKey {
     Quorum,
     PendingOps,
     AuditLog,
-    /// Whether the contract is paused (instance storage).
-    Paused,
 }
 
 /// A pending allowlist operation awaiting quorum approvals.

@@ -157,6 +157,39 @@ fn bidders_len(env: &Env, task_id: &Symbol) -> u32 {
         .unwrap_or(0)
 }
 
+/// Ask the optional agent registry whether `agent_id` is eligible.
+///
+/// When no registry is configured the check is a no-op, preserving the
+/// standalone deployment path. Registry error codes are mapped onto this
+/// contract's local error space so callers cannot distinguish a cross-contract
+/// failure from a local one.
+fn verify_agent_eligibility(env: &Env, agent_id: &Symbol) -> Result<(), Error> {
+    let registry: Option<Address> = env.storage().instance().get(&DataKey::AgentRegistry);
+    let registry_addr = match registry {
+        Some(addr) => addr,
+        None => return Ok(()),
+    };
+
+    use soroban_sdk::{vec, InvokeError, IntoVal, Val};
+    let fn_name = Symbol::new(env, "verify_agent_eligible");
+    let args = vec![env, agent_id.into_val(env)];
+
+    let res: Result<Result<Val, _>, Result<InvokeError, InvokeError>> =
+        env.try_invoke_contract(&registry_addr, &fn_name, args);
+
+    match res {
+        Ok(Ok(_)) => Ok(()),
+        Err(Ok(InvokeError::Contract(code))) | Err(Err(InvokeError::Contract(code))) => match code {
+            1 => Err(Error::AgentNotFound),
+            5 => Err(Error::AgentFrozen),
+            10 => Err(Error::InsufficientBond),
+            39 => Err(Error::AgentDeregistered),
+            _ => Err(Error::AgentNotEligible),
+        },
+        _ => Err(Error::AgentNotEligible),
+    }
+}
+
 /// Load an auction or fail with [`Error::NotFound`].
 fn load_auction(env: &Env, task_id: &Symbol) -> Result<Auction, Error> {
     env.storage()

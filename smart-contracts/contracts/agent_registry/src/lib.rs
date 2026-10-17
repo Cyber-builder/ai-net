@@ -3217,7 +3217,7 @@ impl AgentRegistryContract {
         if callers.len() >= 16 {
             return Err(Error::InvalidRecord);
         }
-        callers.push_back(caller);
+        callers.push_back(caller.clone());
         env.storage()
             .instance()
             .set(&DataKey::AuthorizedCallers, &callers);

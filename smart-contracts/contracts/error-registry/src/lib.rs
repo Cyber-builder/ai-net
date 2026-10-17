@@ -14,6 +14,13 @@ pub const MAX_CLEANUP_BATCH: u32 = 100;
 pub const DEFAULT_CLEANUP_BATCH: u32 = 50;
 pub const CONTRACT_VERSION: &str = "1.0.0";
 
+/// Upper bound on the number of error ids retained per error code. Keeps the
+/// code index from growing without limit on a hot path.
+pub const MAX_CODE_INDEX_SIZE: u32 = 100;
+
+const TTL_THRESHOLD: u32 = 100_000;
+const TTL_EXTEND_TO: u32 = 535_680;
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -40,6 +47,7 @@ pub enum Error {
     Unauthorized = 7,
     UpgradeFailed = 8,
     RollbackNotAvailable = 9,
+    MaxCapacityReached = 10,
 }
 
 #[contract]
@@ -49,7 +57,11 @@ fn read_admin(env: &Env) -> Result<Address, Error> {
     env.storage()
         .instance()
         .get(&DataKey::Admin)
-        .ok_or(Error::NotInitialized)?;
+        .ok_or(Error::NotInitialized)
+}
+
+fn require_admin(env: &Env) -> Result<Address, Error> {
+    let admin = read_admin(env)?;
     admin.require_auth();
     Ok(admin)
 }
@@ -331,7 +343,7 @@ impl ErrorRegistryContract {
 
     pub fn get_error(env: Env, error_id: BytesN<32>) -> Option<ErrorRecord> {
         let now = env.ledger().timestamp();
-        let key = DataKey::Record(error_id);
+        let key = DataKey::Record(error_id.clone());
         if env.storage().persistent().has(&key) {
             env.storage()
                 .persistent()
@@ -339,7 +351,7 @@ impl ErrorRegistryContract {
         }
         env.storage()
             .persistent()
-            .get(&DataKey::Record(error_id))
+            .get(&key)
             .filter(|record: &ErrorRecord| is_active(now, record))
     }
 

@@ -34,6 +34,8 @@ pub enum DataKey {
     ActionCount,
     /// Admin action waiting out the timelock.
     QueuedAction(u32),
+    /// Agent Registry contract used for eligibility checks (optional).
+    AgentRegistry,
 }
 
 #[contract]
@@ -59,6 +61,38 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
         return Err(Error::ContractPaused);
     }
     Ok(())
+}
+
+/// Ask the optional agent registry whether `agent_id` is eligible.
+///
+/// When no registry is configured the check is a no-op, preserving the
+/// standalone deployment path. Registry error codes are mapped onto this
+/// contract's local error space.
+fn verify_agent_eligibility(env: &Env, agent_id: &Symbol) -> Result<(), Error> {
+    let registry: Option<Address> = env.storage().instance().get(&DataKey::AgentRegistry);
+    let registry_addr = match registry {
+        Some(addr) => addr,
+        None => return Ok(()),
+    };
+
+    use soroban_sdk::{vec, InvokeError, IntoVal, Val};
+    let fn_name = Symbol::new(env, "verify_agent_eligible");
+    let args = vec![env, agent_id.into_val(env)];
+
+    let res: Result<Result<Val, _>, Result<InvokeError, InvokeError>> =
+        env.try_invoke_contract(&registry_addr, &fn_name, args);
+
+    match res {
+        Ok(Ok(_)) => Ok(()),
+        Err(Ok(InvokeError::Contract(code))) | Err(Err(InvokeError::Contract(code))) => match code {
+            1 => Err(Error::AgentNotFound),
+            5 => Err(Error::AgentFrozen),
+            10 => Err(Error::InsufficientBond),
+            39 => Err(Error::AgentDeregistered),
+            _ => Err(Error::AgentNotEligible),
+        },
+        _ => Err(Error::AgentNotEligible),
+    }
 }
 
 /// Seconds a queued admin action must wait before it can be executed.

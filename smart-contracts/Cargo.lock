@@ -6,6 +6,7 @@ version = 4
 name = "agent-bidding"
 version = "0.1.0"
 dependencies = [
+ "contract-test-utils",
  "gas-interface",
  "soroban-sdk",
 ]
@@ -21,6 +22,7 @@ dependencies = [
 name = "agent-marketplace"
 version = "0.1.0"
 dependencies = [
+ "contract-test-utils",
  "gas-interface",
  "soroban-sdk",
 ]
@@ -29,6 +31,7 @@ dependencies = [
 name = "agent_registry"
 version = "0.1.0"
 dependencies = [
+ "contract-test-utils",
  "ed25519-dalek",
  "error-resolver",
  "gas-interface",
@@ -287,6 +290,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "contract-test-utils"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,6 +516,7 @@ name = "dispute-resolution"
 version = "0.1.0"
 dependencies = [
  "agent_registry",
+ "contract-test-utils",
  "gas-interface",
  "soroban-sdk",
 ]
@@ -1590,6 +1603,7 @@ dependencies = [
 name = "task-store"
 version = "0.1.0"
 dependencies = [
+ "contract-test-utils",
  "gas-interface",
  "oracle-manager",
  "price-oracle",

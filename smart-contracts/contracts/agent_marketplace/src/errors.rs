@@ -28,6 +28,16 @@ pub enum Error {
     TimelockNotElapsed = 16,
     /// No queued admin action exists with the given id.
     ActionNotQueued = 17,
+    /// The referenced agent is not registered in the agent registry.
+    AgentNotFound = 18,
+    /// The referenced agent is frozen by the registry.
+    AgentFrozen = 19,
+    /// The registry rejected the agent for any other eligibility reason.
+    AgentNotEligible = 20,
+    /// The agent has been deregistered.
+    AgentDeregistered = 21,
+    /// The agent's bond is below the registry minimum.
+    InsufficientBond = 22,
 }
 
 impl Error {
@@ -48,6 +58,11 @@ impl Error {
             15 => Some(Error::InvalidAmount),
             16 => Some(Error::TimelockNotElapsed),
             17 => Some(Error::ActionNotQueued),
+            18 => Some(Error::AgentNotFound),
+            19 => Some(Error::AgentFrozen),
+            20 => Some(Error::AgentNotEligible),
+            21 => Some(Error::AgentDeregistered),
+            22 => Some(Error::InsufficientBond),
             _ => None,
         }
     }

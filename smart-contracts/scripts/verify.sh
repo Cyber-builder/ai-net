@@ -15,6 +15,7 @@ DEPLOYMENT_FILE=""
 REBUILD=false
 STRICT=false
 JSON_OUTPUT=false
+REPORT_SIZES=false
 
 # Usage function
 usage() {
@@ -32,6 +33,8 @@ OPTIONS:
     -r, --rebuild            Rebuild contracts before verification
     --strict                 Exit non-zero on any mismatch or skipped check (use for releases)
     --json                   Print the verification report as JSON on stdout (logs go to stderr)
+    --report-sizes           Report optimized Wasm sizes against the committed budget, then exit
+                             (requires a prior `cargo build --target wasm32v1-none --release`)
     -h, --help               Show this help message
 
 ENVIRONMENT VARIABLES:
@@ -72,6 +75,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --json)
             JSON_OUTPUT=true
+            shift
+            ;;
+        --report-sizes)
+            REPORT_SIZES=true
             shift
             ;;
         -h|--help)
@@ -583,5 +590,9 @@ check_dependencies() {
 }
 
 # Entry point
+if [[ "$REPORT_SIZES" == "true" ]]; then
+    exec node "$SCRIPT_DIR/check-wasm-size.mjs" --report
+fi
+
 check_dependencies
 main "$@"

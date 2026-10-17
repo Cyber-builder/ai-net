@@ -249,12 +249,12 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
-        run: cargo clippy --locked -p error-resolver -p error-registry -p agent_registry -p agent-bidding -p upgrade-manager -p agent-marketplace -p task-store -p dispute-resolution --all-targets -- -D warnings
+        run: cargo clippy --locked -p error-resolver -p error-registry -p agent_registry -p agent-bidding -p upgrade-manager -p agent-marketplace -p task-store -p dispute-resolution -p contract-test-utils --all-targets -- -D warnings
 
       # `--locked` keeps CI on the workspace lockfile resolution, which pins
       # ed25519-dalek to a version compatible with current stable Rust.
       - name: Cargo tests
-        run: cargo test --locked -p error-resolver -p error-registry -p agent_registry -p agent-bidding -p upgrade-manager -p agent-marketplace -p task-store -p dispute-resolution
+        run: cargo test --locked -p error-resolver -p error-registry -p agent_registry -p agent-bidding -p upgrade-manager -p agent-marketplace -p task-store -p dispute-resolution -p contract-test-utils
 
       # Optimized Wasm builds for the deployable contracts.
       # (error-resolver is exercised natively above; its Wasm target is
@@ -270,6 +270,18 @@ jobs:
           cargo build --locked -p dispute-resolution --target wasm32v1-none --release
           cargo build --locked -p upgrade-manager --target wasm32v1-none --release
           ls -la target/wasm32v1-none/release/*.wasm
+
+      - name: Enforce Wasm size budgets
+        run: node scripts/check-wasm-size.mjs
+
+      - name: Upload Wasm size report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-size-report
+          path: smart-contracts/wasm-size-report.md
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Validate event topic convention
         run: node scripts/check-events.mjs
