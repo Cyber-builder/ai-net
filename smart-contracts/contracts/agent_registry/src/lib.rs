@@ -318,6 +318,8 @@ pub enum DataKey {
     // Reputation keys (issue #244)
     /// Coordinator worker authorized to post reputation updates (admin fallback).
     Coordinator,
+    AuthorizedCallers,
+    TaskOutcome(Symbol),
     /// Stored reputation record for one agent.
     Reputation(Symbol),
     /// Tunable decay schedule (instance storage).
@@ -3201,6 +3203,138 @@ impl AgentRegistryContract {
         env.storage().instance().get(&DataKey::Coordinator)
     }
 
+    /// Add an outcome reporter. The instance allowlist is deliberately bounded.
+    pub fn add_authorized_caller(env: Env, caller: Address) -> Result<(), Error> {
+        require_admin(&env)?;
+        let mut callers: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AuthorizedCallers)
+            .unwrap_or(Vec::new(&env));
+        if callers.contains(&caller) {
+            return Err(Error::AlreadyExists);
+        }
+        if callers.len() >= 16 {
+            return Err(Error::InvalidRecord);
+        }
+        callers.push_back(caller);
+        env.storage()
+            .instance()
+            .set(&DataKey::AuthorizedCallers, &callers);
+        env.events().publish(
+            (symbol_short!("registry"), symbol_short!("auth_add")),
+            caller,
+        );
+        Ok(())
+    }
+
+    pub fn remove_authorized_caller(env: Env, caller: Address) -> Result<(), Error> {
+        require_admin(&env)?;
+        let callers: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AuthorizedCallers)
+            .unwrap_or(Vec::new(&env));
+        let mut next = Vec::new(&env);
+        let mut found = false;
+        for authorized in callers.iter() {
+            if authorized == caller {
+                found = true;
+            } else {
+                next.push_back(authorized);
+            }
+        }
+        if !found {
+            return Err(Error::NotFound);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AuthorizedCallers, &next);
+        env.events().publish(
+            (symbol_short!("registry"), symbol_short!("auth_rem")),
+            caller,
+        );
+        Ok(())
+    }
+
+    pub fn is_authorized_caller(env: Env, caller: Address) -> bool {
+        env.storage()
+            .instance()
+            .get::<_, Vec<Address>>(&DataKey::AuthorizedCallers)
+            .map(|callers| callers.contains(&caller))
+            .unwrap_or(false)
+    }
+
+    /// Record an idempotent task outcome. `score_delta` uses the registry's
+    /// fixed-point score units; failed tasks cannot increase the score.
+    pub fn record_task_outcome(
+        env: Env,
+        caller: Address,
+        agent_id: Symbol,
+        success: bool,
+        score_delta: i32,
+        task_id: Symbol,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        caller.require_auth();
+        let callers: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AuthorizedCallers)
+            .unwrap_or(Vec::new(&env));
+        if !callers.contains(&caller) {
+            return Err(Error::Unauthorized);
+        }
+        let outcome_key = DataKey::TaskOutcome(task_id.clone());
+        if env.storage().persistent().has(&outcome_key) {
+            return Err(Error::AlreadyExists);
+        }
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Agent(agent_id.clone()))
+        {
+            return Err(Error::NotFound);
+        }
+        let key = DataKey::Reputation(agent_id.clone());
+        let mut reputation: ReputationScore =
+            env.storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or(ReputationScore {
+                    agent_id: agent_id.clone(),
+                    score: 0,
+                    last_updated: env.ledger().timestamp(),
+                });
+        let delta = if success {
+            score_delta
+        } else {
+            score_delta.min(0)
+        };
+        reputation.score = if delta >= 0 {
+            reputation
+                .score
+                .saturating_add(delta as u64)
+                .min(REPUTATION_SCALE)
+        } else {
+            reputation.score.saturating_sub(delta.unsigned_abs() as u64)
+        };
+        reputation.last_updated = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &reputation);
+        env.storage().persistent().set(&outcome_key, &true);
+        extend_ttl_for_existing_key(&env, &key);
+        extend_ttl_for_existing_key(&env, &outcome_key);
+        env.events().publish(
+            (symbol_short!("registry"), symbol_short!("rep_upd")),
+            ReputationUpdated {
+                agent_id,
+                score: reputation.score,
+                updated_at: reputation.last_updated,
+            },
+        );
+        Ok(())
+    }
+
     /// Update the decay schedule. `epoch_secs` must be > 0 and
     /// `decay_pct` must be ≤ 100; anything else is `InvalidConfig`.
     pub fn set_reputation_config(env: Env, decay_pct: u32, epoch_secs: u64) -> Result<(), Error> {
@@ -3674,10 +3808,10 @@ impl AgentRegistryContract {
         if let Some((prev_maj, prev_min, prev_pat)) = index.last() {
             let prev_key =
                 DataKey::AgentVersionRecord(record.id.clone(), prev_maj, prev_min, prev_pat);
-            if let Some(mut prev_versioned) =
-                env.storage()
-                    .persistent()
-                    .get::<_, VersionedAgentRecord>(&prev_key)
+            if let Some(mut prev_versioned) = env
+                .storage()
+                .persistent()
+                .get::<_, VersionedAgentRecord>(&prev_key)
             {
                 prev_versioned.superseded = true;
                 env.storage().persistent().set(&prev_key, &prev_versioned);
@@ -3791,11 +3925,7 @@ impl AgentRegistryContract {
 
         for id in ids.iter() {
             let agent_key = DataKey::Agent(id.clone());
-            if let Some(record) = env
-                .storage()
-                .persistent()
-                .get::<_, AgentRecord>(&agent_key)
-            {
+            if let Some(record) = env.storage().persistent().get::<_, AgentRecord>(&agent_key) {
                 // When no constraint is given, include every agent.
                 let passes = match &version_constraint {
                     None => true,
@@ -3814,8 +3944,7 @@ impl AgentRegistryContract {
                         while j > 0 {
                             j -= 1;
                             let (maj, min, pat) = index.get(j).unwrap();
-                            let ver_key =
-                                DataKey::AgentVersionRecord(id.clone(), maj, min, pat);
+                            let ver_key = DataKey::AgentVersionRecord(id.clone(), maj, min, pat);
                             if let Some(vr) = env
                                 .storage()
                                 .persistent()
