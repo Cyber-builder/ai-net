@@ -260,6 +260,12 @@ pub enum DataKey {
     Vote(u64, Address),
     /// Agent Registry contract address.
     AgentRegistry,
+    /// Whether proposal creation and voting are paused.
+    Paused,
+    /// Parameter registry contract that `ParameterChange` proposals write to.
+    ParamRegistry,
+    /// Bounded [`PowerCheckpoint`] history for an agent.
+    Checkpoints(Address),
 }
 
 // ─── Event payloads ──────────────────────────────────────────────────────────

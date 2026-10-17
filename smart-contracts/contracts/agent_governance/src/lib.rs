@@ -197,7 +197,7 @@ fn verify_agent_eligibility(env: &Env, agent_id: &soroban_sdk::Symbol) -> Result
         None => return Ok(()),
     };
 
-    use soroban_sdk::{InvokeError, IntoVal, Symbol, Val, vec};
+    use soroban_sdk::{vec, IntoVal, InvokeError, Symbol, Val};
     let fn_name = Symbol::new(env, "verify_agent_eligible");
     let args = vec![env, agent_id.into_val(env)];
 
@@ -206,13 +206,15 @@ fn verify_agent_eligibility(env: &Env, agent_id: &soroban_sdk::Symbol) -> Result
 
     match res {
         Ok(Ok(_)) => Ok(()),
-        Err(Ok(InvokeError::Contract(code))) | Err(Err(InvokeError::Contract(code))) => match code {
-            1 => Err(Error::AgentNotFound),
-            5 => Err(Error::AgentFrozen),
-            10 => Err(Error::InsufficientBond),
-            36 => Err(Error::AgentDeregistered),
-            _ => Err(Error::AgentNotEligible),
-        },
+        Err(Ok(InvokeError::Contract(code))) | Err(Err(InvokeError::Contract(code))) => {
+            match code {
+                1 => Err(Error::AgentNotFound),
+                5 => Err(Error::AgentFrozen),
+                10 => Err(Error::InsufficientBond),
+                36 => Err(Error::AgentDeregistered),
+                _ => Err(Error::AgentNotEligible),
+            }
+        }
         _ => Err(Error::AgentNotEligible),
     }
 }
@@ -281,6 +283,30 @@ impl AgentGovernanceContract {
         Ok(())
     }
 
+    /// Whether proposal creation and voting are currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Set the parameter registry that `ParameterChange` proposals target.
+    /// Admin only; the registry must be a contract address.
+    pub fn set_param_registry(env: Env, registry: Address) -> Result<(), Error> {
+        require_admin(&env)?;
+        validate_target(&env, &registry)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::ParamRegistry, &registry);
+        Ok(())
+    }
+
+    /// Return the configured parameter registry, if any.
+    pub fn get_param_registry(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::ParamRegistry)
+    }
+
     /// Set the agent registry contract address.
     pub fn set_agent_registry(env: Env, registry: Address) -> Result<(), Error> {
         let admin: Address = env
@@ -289,7 +315,9 @@ impl AgentGovernanceContract {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
-        env.storage().instance().set(&DataKey::AgentRegistry, &registry);
+        env.storage()
+            .instance()
+            .set(&DataKey::AgentRegistry, &registry);
         Ok(())
     }
 
