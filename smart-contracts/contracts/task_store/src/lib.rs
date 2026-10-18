@@ -1308,7 +1308,7 @@ mod test {
         let mgr_id = fixture.env.register(OracleManagerContract, ());
         let mgr_client = oracle_manager::OracleManagerContractClient::new(&fixture.env, &mgr_id);
         let admin_mgr = Address::generate(&fixture.env);
-        mgr_client.initialize(&admin_mgr);
+        mgr_client.initialize(&admin_mgr, &None);
         mgr_client.set_oracle(&Some(oracle_id));
 
         // TaskStore already initialized by fixture(); just wire up OracleManager.
@@ -1354,7 +1354,7 @@ mod test {
         let mgr_id = fixture.env.register(OracleManagerContract, ());
         let mgr_client = oracle_manager::OracleManagerContractClient::new(&fixture.env, &mgr_id);
         let admin_mgr = Address::generate(&fixture.env);
-        mgr_client.initialize(&admin_mgr);
+        mgr_client.initialize(&admin_mgr, &None);
         mgr_client.set_oracle(&Some(oracle_id));
         // No fallback set → NoPriceAvailable from oracle_manager.
 
@@ -1399,7 +1399,7 @@ mod test {
         let mgr_id = fixture.env.register(OracleManagerContract, ());
         let mgr_client = oracle_manager::OracleManagerContractClient::new(&fixture.env, &mgr_id);
         let admin_mgr = Address::generate(&fixture.env);
-        mgr_client.initialize(&admin_mgr);
+        mgr_client.initialize(&admin_mgr, &None);
         mgr_client.set_oracle(&Some(oracle_id));
         // Set a fallback price for this pair.
         mgr_client.set_fallback_price(&pair, &8_000_000i128);
@@ -1465,7 +1465,7 @@ mod test {
 
         let mgr_a = fixture.env.register(OracleManagerContract, ());
         let mgr_a_client = oracle_manager::OracleManagerContractClient::new(&fixture.env, &mgr_a);
-        mgr_a_client.initialize(&Address::generate(&fixture.env));
+        mgr_a_client.initialize(&Address::generate(&fixture.env), &None);
         mgr_a_client.set_oracle(&Some(oracle_a));
 
         // Deploy second oracle with price 20_000_000.
@@ -1476,7 +1476,7 @@ mod test {
 
         let mgr_b = fixture.env.register(OracleManagerContract, ());
         let mgr_b_client = oracle_manager::OracleManagerContractClient::new(&fixture.env, &mgr_b);
-        mgr_b_client.initialize(&Address::generate(&fixture.env));
+        mgr_b_client.initialize(&Address::generate(&fixture.env), &None);
         mgr_b_client.set_oracle(&Some(oracle_b));
 
         // TaskStore already initialized by fixture(); just wire up OracleManager.

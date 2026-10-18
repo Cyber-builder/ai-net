@@ -256,6 +256,8 @@ pub enum DataKey {
     MultisigConfig,
     /// Monotonic proposal id counter
     NextProposalId,
+    /// Bounded, ordered index of recorded version tags (oldest first)
+    VersionIndex,
 }
 
 /// Upgrade operation errors.
@@ -297,6 +299,18 @@ pub enum UpgradeError {
     /// The Wasm swap is not available in this build, so the upgrade could
     /// not actually be applied
     SwapUnavailable = 15,
+    /// This governance member has already approved the proposal
+    AlreadyApproved = 16,
+    /// The approval threshold has not been reached
+    InsufficientApprovals = 17,
+    /// The timelock delay has not yet elapsed
+    TimelockNotElapsed = 18,
+    /// The proposal's validity period has passed
+    ProposalExpired = 19,
+    /// The proposal has already been executed or rolled back
+    ProposalAlreadyExecuted = 20,
+    /// Multisig signer set, threshold or timelock delay is invalid
+    InvalidMultisigConfig = 21,
 }
 
 /// Main upgrade manager contract
@@ -339,6 +353,106 @@ fn get_current_version(env: &Env) -> Option<ContractVersion> {
     env.storage().persistent().get(&DataKey::CurrentVersion)
 }
 
+fn get_multisig(env: &Env) -> Option<MultisigConfig> {
+    env.storage().instance().get(&DataKey::MultisigConfig)
+}
+
+fn next_proposal_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::NextProposalId)
+        .unwrap_or(1)
+}
+
+fn load_proposal(env: &Env, id: u64) -> Result<UpgradeProposal, UpgradeError> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Proposal(id))
+        .ok_or(UpgradeError::NoProposal)
+}
+
+fn save_proposal(env: &Env, proposal: &UpgradeProposal) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Proposal(proposal.id), proposal);
+    extend_ttl_for_key(env, &DataKey::Proposal(proposal.id));
+}
+
+/// Effective threshold and timelock delay for the current configuration.
+///
+/// With no multisig configured this degrades to single-admin governance:
+/// threshold 1 (the proposer's implicit approval) and the default 24h delay,
+/// so a single-admin deployment still gets a real timelock.
+fn effective_config(env: &Env) -> (u32, u64) {
+    match get_multisig(env) {
+        Some(cfg) => (cfg.threshold, cfg.timelock_delay),
+        None => (DEFAULT_THRESHOLD, DEFAULT_TIMELOCK_DELAY),
+    }
+}
+
+/// Whether `addr` may participate in upgrade governance.
+fn is_governance_member(env: &Env, addr: &Address) -> bool {
+    if let Some(admin) = env.storage().instance().get::<_, Address>(&DataKey::Admin) {
+        if &admin == addr {
+            return true;
+        }
+    }
+    match get_multisig(env) {
+        Some(cfg) => cfg.admins.contains(addr),
+        None => false,
+    }
+}
+
+/// Require that `member` signed the transaction and is a governance member.
+///
+/// `require_auth()` is what actually proves authorization; the membership check
+/// only narrows who is allowed at all. Both are required.
+fn require_governance_member(env: &Env, member: &Address) -> Result<(), UpgradeError> {
+    member.require_auth();
+    if !is_governance_member(env, member) {
+        return Err(UpgradeError::Unauthorized);
+    }
+    Ok(())
+}
+
+/// The status a proposal *actually* has right now.
+///
+/// `Ready` is derived rather than stored, because no transaction runs at the
+/// moment the timelock elapses.
+fn effective_status(proposal: &UpgradeProposal, now: u64) -> ProposalStatus {
+    if proposal.status.is_terminal() {
+        return proposal.status.clone();
+    }
+    if now > proposal.expires_at {
+        return ProposalStatus::Expired;
+    }
+    if proposal.status == ProposalStatus::PendingTimelock && proposal.eta > 0 && now >= proposal.eta
+    {
+        return ProposalStatus::Ready;
+    }
+    proposal.status.clone()
+}
+
+/// Append `version` to the bounded version index (no duplicates), dropping
+/// the oldest entries beyond [`MAX_VERSION_HISTORY`].
+fn record_version(env: &Env, version: &String) {
+    let mut index: Vec<String> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VersionIndex)
+        .unwrap_or_else(|| Vec::new(env));
+    if !index.contains(version) {
+        index.push_back(version.clone());
+    }
+    while index.len() > MAX_VERSION_HISTORY {
+        index.pop_front();
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::VersionIndex, &index);
+    extend_ttl_for_key(env, &DataKey::VersionIndex);
+}
+
 /// Returns `Ok(true)` when `proposed` has strictly higher semver precedence
 /// than `current`, using [`strutil::compare_versions`] (numeric component-wise
 /// comparison; pre-releases sort below their release). Malformed tags yield
@@ -361,7 +475,6 @@ impl UpgradeManager {
         initial_version: String,
         initial_wasm_hash: BytesN<32>,
     ) -> Result<(), UpgradeError> {
-        admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(UpgradeError::InvalidVersion);
         }
@@ -844,8 +957,7 @@ impl UpgradeManager {
         let restored_version = record.previous_version.version.clone();
 
         // Perform the rollback
-        swap_wasm(&env, &rollback_record.previous_version.wasm_hash)
-            .map_err(|_| UpgradeError::SwapUnavailable)?;
+        swap_wasm(&env, &restored_wasm_hash).map_err(|_| UpgradeError::SwapUnavailable)?;
 
         env.storage()
             .persistent()
@@ -956,6 +1068,11 @@ impl UpgradeManager {
 
     /// Get all version history (for debugging/auditing).
     pub fn get_version_history(env: Env) -> Vec<ContractVersion> {
+        let index: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VersionIndex)
+            .unwrap_or_else(|| Vec::new(&env));
         let mut history = Vec::new(&env);
         let mut i = index.len();
         while i > 0 {
@@ -1007,6 +1124,13 @@ mod contract_tests {
         (env, client, admin)
     }
 
+    /// Advance the clock past the single-admin timelock so a proposal that
+    /// reached its (implicit) threshold becomes `Ready`.
+    fn pass_timelock(env: &Env) {
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + DEFAULT_TIMELOCK_DELAY);
+    }
+
     fn test_wasm_hash(env: &Env, seed: u8) -> BytesN<32> {
         let mut bytes = [0u8; 32];
         bytes[0] = seed;
@@ -1044,6 +1168,7 @@ mod contract_tests {
 
         // Propose upgrade
         let result = client.try_propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &new_hash,
             &String::from_str(&env, "Major upgrade"),
@@ -1052,11 +1177,12 @@ mod contract_tests {
         assert!(result.is_ok());
 
         // Validate proposal
-        let gas_estimate = client.validate_proposal();
+        let gas_estimate = client.validate_proposal(&admin, &1);
         assert!(gas_estimate > 0);
 
         // Execute upgrade
-        let result = client.try_execute_upgrade();
+        pass_timelock(&env);
+        let result = client.try_execute_upgrade(&admin, &1);
         assert!(result.is_ok());
 
         let new_version = client.get_current_version().unwrap();
@@ -1081,19 +1207,21 @@ mod contract_tests {
 
         // Perform upgrade
         client.propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &new_hash,
             &String::from_str(&env, "Test upgrade"),
             &migration_plan,
         );
-        client.validate_proposal();
-        client.execute_upgrade();
+        client.validate_proposal(&admin, &1);
+        pass_timelock(&env);
+        client.execute_upgrade(&admin, &1);
 
         // Check rollback is available
-        assert!(client.can_rollback());
+        assert!(client.can_rollback(&1));
 
         // Perform rollback
-        let result = client.try_rollback_upgrade();
+        let result = client.try_rollback_upgrade(&admin, &1);
         assert!(result.is_ok());
 
         // Verify we're back to original version
@@ -1102,7 +1230,7 @@ mod contract_tests {
         assert_eq!(current.wasm_hash, initial_hash);
 
         // Verify rollback is no longer available
-        assert!(!client.can_rollback());
+        assert!(!client.can_rollback(&1));
     }
 
     #[test]
@@ -1122,13 +1250,15 @@ mod contract_tests {
 
         // Perform upgrade
         client.propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &new_hash,
             &String::from_str(&env, "Test upgrade"),
             &migration_plan,
         );
-        client.validate_proposal();
-        client.execute_upgrade();
+        client.validate_proposal(&admin, &1);
+        pass_timelock(&env);
+        client.execute_upgrade(&admin, &1);
 
         // Advance ledger past rollback deadline
         let current_seq = env.ledger().sequence();
@@ -1136,7 +1266,7 @@ mod contract_tests {
             .set_sequence_number(current_seq + ROLLBACK_WINDOW_LEDGERS + 1);
 
         // Rollback should fail
-        let result = client.try_rollback_upgrade();
+        let result = client.try_rollback_upgrade(&admin, &1);
         assert_eq!(result, Err(Ok(UpgradeError::RollbackDeadlineExpired)));
     }
 
@@ -1157,7 +1287,11 @@ mod contract_tests {
             ("1.99.0", "1.100.0", Ok(())),
             ("2.0.0", "10.0.0", Ok(())),
             ("1.0.0-rc.1", "1.0.0", Ok(())),
-            ("1.0.0", "1.0.0-rc.1", Err(UpgradeError::DowngradeNotAllowed)),
+            (
+                "1.0.0",
+                "1.0.0-rc.1",
+                Err(UpgradeError::DowngradeNotAllowed),
+            ),
             ("1.0.0", "1.0.0", Err(UpgradeError::DowngradeNotAllowed)),
             ("1.0.1", "1.0.0", Err(UpgradeError::DowngradeNotAllowed)),
             ("1.0", "1.0.0.1", Ok(())),
@@ -1166,8 +1300,13 @@ mod contract_tests {
         ];
         for (current, proposed, expected) in cases {
             let (env, client, admin) = create_test_env();
-            client.initialize(&admin, &String::from_str(&env, current), &test_wasm_hash(&env, 1));
+            client.initialize(
+                &admin,
+                &String::from_str(&env, current),
+                &test_wasm_hash(&env, 1),
+            );
             let result = client.try_propose_upgrade(
+                &admin,
                 &String::from_str(&env, proposed),
                 &test_wasm_hash(&env, 2),
                 &String::from_str(&env, "upgrade"),
@@ -1197,13 +1336,15 @@ mod contract_tests {
         );
 
         client.propose_upgrade(
+            &admin,
             &String::from_str(&env, "1.10.0"),
             &new_hash,
             &String::from_str(&env, "upgrade"),
             &empty_plan(&env),
         );
-        client.validate_proposal();
-        client.execute_upgrade();
+        client.validate_proposal(&admin, &1);
+        pass_timelock(&env);
+        client.execute_upgrade(&admin, &1);
 
         let calls = env.as_contract(&client.address, || mock_swap_calls(&env));
         assert_eq!(calls.len(), 1);
@@ -1213,7 +1354,7 @@ mod contract_tests {
             Some(new_hash)
         );
 
-        client.rollback_upgrade();
+        client.rollback_upgrade(&admin, &1);
         let calls = env.as_contract(&client.address, || mock_swap_calls(&env));
         assert_eq!(calls.len(), 2);
         assert_eq!(calls.get(1).unwrap(), initial_hash);
@@ -1276,13 +1417,15 @@ mod contract_tests {
             estimated_items: 0,
         };
         client.propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &test_wasm_hash(&env, 2),
             &String::from_str(&env, "Upgrade"),
             &migration_plan,
         );
-        client.validate_proposal();
-        client.execute_upgrade();
+        client.validate_proposal(&admin, &1);
+        pass_timelock(&env);
+        client.execute_upgrade(&admin, &1);
 
         let history = client.get_version_history();
         assert_eq!(history.len(), 2);
@@ -1310,7 +1453,8 @@ mod contract_tests {
         env.mock_auths(&[]);
 
         let result = client.try_set_admin(&intruder);
-        assert_eq!(result, Err(Ok(UpgradeError::Unauthorized)));
+        // A missing signature aborts in `require_auth`, before any typed error.
+        assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     }
 
     #[test]
@@ -1322,7 +1466,8 @@ mod contract_tests {
         env.mock_auths(&[]);
 
         let result = client.try_pause();
-        assert_eq!(result, Err(Ok(UpgradeError::Unauthorized)));
+        // A missing signature aborts in `require_auth`, before any typed error.
+        assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     }
 
     #[test]
@@ -1337,7 +1482,8 @@ mod contract_tests {
         env.mock_auths(&[]);
 
         let result = client.try_unpause();
-        assert_eq!(result, Err(Ok(UpgradeError::Unauthorized)));
+        // A missing signature aborts in `require_auth`, before any typed error.
+        assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     }
 
     #[test]
@@ -1357,12 +1503,14 @@ mod contract_tests {
         env.mock_auths(&[]);
 
         let result = client.try_propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &new_hash,
             &String::from_str(&env, "Unauthorized upgrade"),
             &migration_plan,
         );
-        assert_eq!(result, Err(Ok(UpgradeError::Unauthorized)));
+        // A missing signature aborts in `require_auth`, before any typed error.
+        assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     }
 
     #[test]
@@ -1381,6 +1529,7 @@ mod contract_tests {
 
         env.mock_all_auths();
         client.propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &new_hash,
             &String::from_str(&env, "Test upgrade"),
@@ -1389,8 +1538,9 @@ mod contract_tests {
 
         env.mock_auths(&[]);
 
-        let result = client.try_validate_proposal();
-        assert_eq!(result, Err(Ok(UpgradeError::Unauthorized)));
+        let result = client.try_validate_proposal(&admin, &1);
+        // A missing signature aborts in `require_auth`, before any typed error.
+        assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     }
 
     #[test]
@@ -1409,17 +1559,20 @@ mod contract_tests {
 
         env.mock_all_auths();
         client.propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &new_hash,
             &String::from_str(&env, "Test upgrade"),
             &migration_plan,
         );
-        client.validate_proposal();
+        client.validate_proposal(&admin, &1);
 
         env.mock_auths(&[]);
 
-        let result = client.try_execute_upgrade();
-        assert_eq!(result, Err(Ok(UpgradeError::Unauthorized)));
+        pass_timelock(&env);
+        let result = client.try_execute_upgrade(&admin, &1);
+        // A missing signature aborts in `require_auth`, before any typed error.
+        assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     }
 
     #[test]
@@ -1438,18 +1591,21 @@ mod contract_tests {
 
         env.mock_all_auths();
         client.propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &new_hash,
             &String::from_str(&env, "Test upgrade"),
             &migration_plan,
         );
-        client.validate_proposal();
-        client.execute_upgrade();
+        client.validate_proposal(&admin, &1);
+        pass_timelock(&env);
+        client.execute_upgrade(&admin, &1);
 
         env.mock_auths(&[]);
 
-        let result = client.try_rollback_upgrade();
-        assert_eq!(result, Err(Ok(UpgradeError::Unauthorized)));
+        let result = client.try_rollback_upgrade(&admin, &1);
+        // A missing signature aborts in `require_auth`, before any typed error.
+        assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     }
 
     #[test]
@@ -1481,6 +1637,7 @@ mod contract_tests {
         };
 
         let res = client.try_propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &test_wasm_hash(&env, 2),
             &String::from_str(&env, "Paused upgrade"),
@@ -1507,6 +1664,7 @@ mod contract_tests {
 
         // Proposing 1.0.0 when current is 2.0.0 fails
         let res = client.try_propose_upgrade(
+            &admin,
             &String::from_str(&env, "1.0.0"),
             &test_wasm_hash(&env, 2),
             &String::from_str(&env, "Downgrade"),
@@ -1529,6 +1687,7 @@ mod contract_tests {
         };
 
         client.propose_upgrade(
+            &admin,
             &String::from_str(&env, "2.0.0"),
             &test_wasm_hash(&env, 2),
             &String::from_str(&env, "Unvalidated"),
@@ -1536,7 +1695,8 @@ mod contract_tests {
         );
 
         // Execute without validate_proposal fails
-        let res = client.try_execute_upgrade();
+        pass_timelock(&env);
+        let res = client.try_execute_upgrade(&admin, &1);
         assert_eq!(res, Err(Ok(UpgradeError::ProposalNotValidated)));
     }
 }

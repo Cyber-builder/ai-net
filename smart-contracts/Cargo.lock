@@ -599,6 +599,7 @@ dependencies = [
 name = "error-resolver"
 version = "0.1.0"
 dependencies = [
+ "error-registry",
  "serde",
  "soroban-sdk",
  "toml",
@@ -1740,6 +1741,7 @@ name = "upgrade-manager"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "upgrade-manager",
 ]
 
 [[package]]

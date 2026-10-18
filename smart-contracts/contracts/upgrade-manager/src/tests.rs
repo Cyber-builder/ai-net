@@ -16,8 +16,9 @@ use crate::{
     DEFAULT_PROPOSAL_EXPIRY, DEFAULT_THRESHOLD, DEFAULT_TIMELOCK_DELAY, ROLLBACK_WINDOW_LEDGERS,
 };
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, BytesN, Env, String, Vec,
+    Address, BytesN, Env, IntoVal, String, Vec,
 };
 
 struct Fixture {
@@ -47,7 +48,7 @@ fn fixture() -> Fixture {
     client.initialize(&admin1, &String::from_str(&env, "1.0.0"), &initial_hash);
 
     let admins = Vec::from_array(&env, [admin1.clone(), admin2.clone(), admin3.clone()]);
-    client.set_multisig_config(&admin1, &admins, &2, &DEFAULT_TIMELOCK_DELAY);
+    client.set_multisig_config(&admins, &2, &DEFAULT_TIMELOCK_DELAY);
 
     Fixture {
         env,
@@ -126,9 +127,7 @@ fn test_multisig_config_rejects_invalid_threshold() {
     );
     // zero timelock
     assert_eq!(
-        f.client
-            .try_set_multisig_config(&admins, &1, &0)
-            .err(),
+        f.client.try_set_multisig_config(&admins, &1, &0).err(),
         Some(Ok(UpgradeError::InvalidMultisigConfig))
     );
 }
@@ -378,6 +377,15 @@ fn test_full_lifecycle_propose_approve_timelock_execute() {
     );
 
     f.client.execute_upgrade(&f.admin1, &id);
+    // `events().all()` only reflects the last invocation (execute_upgrade),
+    // which must have emitted the `applied` event.
+    let applied = (symbol_short!("upgrade"), symbol_short!("applied")).into_val(&f.env);
+    assert!(f
+        .env
+        .events()
+        .all()
+        .iter()
+        .any(|(_, topics, _)| topics == applied));
 
     let v = f.client.get_current_version().unwrap();
     assert_eq!(v.version, String::from_str(&f.env, "2.0.0"));
@@ -393,14 +401,6 @@ fn test_full_lifecycle_propose_approve_timelock_execute() {
     assert_eq!(
         f.client.try_execute_upgrade(&f.admin1, &id).err(),
         Some(Ok(UpgradeError::ProposalAlreadyExecuted))
-    );
-
-    // Every lifecycle transition emitted an event.
-    let events = f.env.events().all();
-    assert!(
-        events.len() >= 5,
-        "expected propose/approve/validated/applied, got {}",
-        events.len()
     );
 }
 
@@ -677,6 +677,8 @@ fn test_proposals_are_stored_per_id() {
         &String::from_str(&f.env, "first"),
         &plan(&f.env, 1),
     );
-    assert!(f.env.storage().persistent().has(&DataKey::Proposal(id)));
-    assert!(!f.env.storage().persistent().has(&DataKey::Proposal(id + 1)));
+    f.env.as_contract(&f.client.address, || {
+        assert!(f.env.storage().persistent().has(&DataKey::Proposal(id)));
+        assert!(!f.env.storage().persistent().has(&DataKey::Proposal(id + 1)));
+    });
 }
