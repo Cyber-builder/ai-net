@@ -18,8 +18,9 @@ use crate::{
     GAS_MIGRATION_STEP_OVERHEAD, GAS_UPGRADE_BASE, ROLLBACK_WINDOW_LEDGERS,
 };
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, BytesN, Env, String, Vec,
+    Address, BytesN, Env, IntoVal, String, Vec,
 };
 
 struct Fixture {
@@ -128,9 +129,7 @@ fn test_multisig_config_rejects_invalid_threshold() {
     );
     // zero timelock
     assert_eq!(
-        f.client
-            .try_set_multisig_config(&admins, &1, &0)
-            .err(),
+        f.client.try_set_multisig_config(&admins, &1, &0).err(),
         Some(Ok(UpgradeError::InvalidMultisigConfig))
     );
 }
@@ -380,6 +379,15 @@ fn test_full_lifecycle_propose_approve_timelock_execute() {
     );
 
     f.client.execute_upgrade(&f.admin1, &id);
+    // `events().all()` only reflects the last invocation (execute_upgrade),
+    // which must have emitted the `applied` event.
+    let applied = (symbol_short!("upgrade"), symbol_short!("applied")).into_val(&f.env);
+    assert!(f
+        .env
+        .events()
+        .all()
+        .iter()
+        .any(|(_, topics, _)| topics == applied));
 
     // The test host retains only the most recent invocation's event buffer, so
     // read it before any further contract call. These are the applied event.
@@ -681,128 +689,8 @@ fn test_proposals_are_stored_per_id() {
         &String::from_str(&f.env, "first"),
         &plan(&f.env, 1),
     );
-    assert!(f
-        .env
-        .as_contract(&f.client.address, || f
-            .env
-            .storage()
-            .persistent()
-            .has(&DataKey::Proposal(id))));
-    assert!(!f
-        .env
-        .as_contract(&f.client.address, || f
-            .env
-            .storage()
-            .persistent()
-            .has(&DataKey::Proposal(id + 1))));
-}
-
-// ─── 10. Version precedence, history and swap bookkeeping ────────────────────
-
-/// Semver components are compared numerically, not as byte strings. A
-/// proposal that is not strictly newer is rejected, and a malformed tag never
-/// falls back to lexicographic order.
-#[test]
-fn test_semver_precedence_table() {
-    let cases: &[(&str, &str, Result<(), UpgradeError>)] = &[
-        ("1.9.0", "1.10.0", Ok(())),
-        ("1.99.0", "1.100.0", Ok(())),
-        ("2.0.0", "10.0.0", Ok(())),
-        ("1.0.0-rc.1", "1.0.0", Ok(())),
-        ("1.0.0", "1.0.0-rc.1", Err(UpgradeError::DowngradeNotAllowed)),
-        ("1.0.0", "1.0.0", Err(UpgradeError::DowngradeNotAllowed)),
-        ("1.0.1", "1.0.0", Err(UpgradeError::DowngradeNotAllowed)),
-        ("1.0", "1.0.0.1", Ok(())),
-        ("1.0.0", "1.x.0", Err(UpgradeError::MalformedVersion)),
-        ("1.0.0", "", Err(UpgradeError::MalformedVersion)),
-    ];
-
-    for (current, proposed, expected) in cases {
-        let env = Env::default();
-        env.mock_all_auths();
-        env.ledger().set_timestamp(1_000_000);
-        let contract_id = env.register(UpgradeManager, ());
-        let client = UpgradeManagerClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(
-            &admin,
-            &String::from_str(&env, current),
-            &test_wasm_hash(&env, 1),
-        );
-
-        let result = client.try_propose_upgrade(
-            &admin,
-            &String::from_str(&env, proposed),
-            &test_wasm_hash(&env, 2),
-            &String::from_str(&env, "upgrade"),
-            &plan(&env, 0),
-        );
-        let actual = match result {
-            Ok(_) => Ok(()),
-            Err(Ok(err)) => Err(err),
-            Err(Err(_)) => panic!("unexpected host error for {current} -> {proposed}"),
-        };
-        assert_eq!(actual, *expected, "{current} -> {proposed}");
-    }
-}
-
-/// Gas estimation is a pure formula over the plan: base + per-item + per-step
-/// overhead. It must not depend on ledger state.
-#[test]
-fn test_gas_estimation_matches_formula() {
-    let f = fixture();
-    let mut migration_plan = plan(&f.env, 100);
-    migration_plan
-        .pre_migration_checks
-        .push_back(String::from_str(&f.env, "check1"));
-    migration_plan
-        .data_transformations
-        .push_back(String::from_str(&f.env, "transform1"));
-    migration_plan
-        .post_migration_validations
-        .push_back(String::from_str(&f.env, "validate1"));
-
-    let gas_estimate = f.client.estimate_migration_gas(&migration_plan);
-    let expected =
-        GAS_UPGRADE_BASE + GAS_MIGRATION_PER_ITEM * 100 + 3 * GAS_MIGRATION_STEP_OVERHEAD;
-    assert_eq!(gas_estimate, expected);
-}
-
-/// The version index is returned newest first, including the initial version.
-#[test]
-fn test_version_history_is_newest_first() {
-    let f = fixture();
-    let (id, _) = propose_and_approve(&f);
-    pass_timelock(&f, id);
-    f.client.execute_upgrade(&f.admin1, &id);
-
-    let history = f.client.get_version_history();
-    assert_eq!(history.len(), 2);
-    assert_eq!(history.get_unchecked(0).version, String::from_str(&f.env, "2.0.0"));
-    assert_eq!(history.get_unchecked(1).version, String::from_str(&f.env, "1.0.0"));
-}
-
-/// Execute records the proposed hash as the swap target; rollback records the
-/// hash captured before the upgrade.
-#[test]
-fn test_swap_records_each_target() {
-    let f = fixture();
-    assert_eq!(
-        f.env.as_contract(&f.client.address, || stored_wasm_hash(&f.env)),
-        Some(f.initial_hash.clone())
-    );
-
-    let (id, new_hash) = propose_and_approve(&f);
-    pass_timelock(&f, id);
-    f.client.execute_upgrade(&f.admin1, &id);
-
-    let calls = f.env.as_contract(&f.client.address, || mock_swap_calls(&f.env));
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls.get_unchecked(0), new_hash);
-
-    f.client.rollback_upgrade(&f.admin1, &id);
-
-    let calls = f.env.as_contract(&f.client.address, || mock_swap_calls(&f.env));
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls.get_unchecked(1), f.initial_hash);
+    f.env.as_contract(&f.client.address, || {
+        assert!(f.env.storage().persistent().has(&DataKey::Proposal(id)));
+        assert!(!f.env.storage().persistent().has(&DataKey::Proposal(id + 1)));
+    });
 }

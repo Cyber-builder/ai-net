@@ -16,6 +16,7 @@ pub const TTL_EXTEND_TO: u32 = 535_680;
 #[contracttype]
 pub enum DataKey {
     Admin,
+    /// Whether the contract is paused (instance storage).
     Paused,
     Version,
     AuthorizedCallers,
