@@ -276,6 +276,8 @@ pub enum DataKey {
     PaymentAsset,
     /// Decimals of the configured payment asset.
     AssetDecimals,
+    /// Agent Registry contract used for eligibility checks (optional).
+    AgentRegistry,
 }
 
 // ─── Event Payloads ──────────────────────────────────────────────────────────

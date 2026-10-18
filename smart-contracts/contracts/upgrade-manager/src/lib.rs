@@ -463,6 +463,111 @@ fn is_version_newer(current: &String, proposed: &String) -> Result<bool, Upgrade
         .ok_or(UpgradeError::MalformedVersion)
 }
 
+fn get_multisig(env: &Env) -> Option<MultisigConfig> {
+    env.storage().instance().get(&DataKey::MultisigConfig)
+}
+
+fn next_proposal_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::NextProposalId)
+        .unwrap_or(1)
+}
+
+fn load_proposal(env: &Env, id: u64) -> Result<UpgradeProposal, UpgradeError> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Proposal(id))
+        .ok_or(UpgradeError::NoProposal)
+}
+
+fn save_proposal(env: &Env, proposal: &UpgradeProposal) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Proposal(proposal.id), proposal);
+    extend_ttl_for_key(env, &DataKey::Proposal(proposal.id));
+}
+
+/// Append `version` to the bounded version-history index.
+///
+/// The index is capped at [`MAX_VERSION_HISTORY`] entries; the oldest tag is
+/// dropped first. Re-recording an existing tag is a no-op so an idempotent
+/// execution path cannot duplicate history.
+fn record_version(env: &Env, version: &String) {
+    let key = DataKey::VersionIndex;
+    let mut index: Vec<String> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    if index.iter().any(|existing| &existing == version) {
+        return;
+    }
+
+    index.push_back(version.clone());
+    while index.len() > MAX_VERSION_HISTORY {
+        index.remove(0);
+    }
+    env.storage().persistent().set(&key, &index);
+    extend_ttl_for_key(env, &key);
+}
+
+/// Effective threshold and timelock delay for the current configuration.
+///
+/// With no multisig configured this degrades to single-admin governance:
+/// threshold 1 (the proposer's implicit approval) and the default 24h delay,
+/// so a single-admin deployment still gets a real timelock.
+fn effective_config(env: &Env) -> (u32, u64) {
+    match get_multisig(env) {
+        Some(cfg) => (cfg.threshold, cfg.timelock_delay),
+        None => (DEFAULT_THRESHOLD, DEFAULT_TIMELOCK_DELAY),
+    }
+}
+
+/// Whether `addr` may participate in upgrade governance.
+fn is_governance_member(env: &Env, addr: &Address) -> bool {
+    if let Some(admin) = env.storage().instance().get::<_, Address>(&DataKey::Admin) {
+        if &admin == addr {
+            return true;
+        }
+    }
+    match get_multisig(env) {
+        Some(cfg) => cfg.admins.contains(addr),
+        None => false,
+    }
+}
+
+/// Require that `member` signed the transaction and is a governance member.
+///
+/// `require_auth()` is what actually proves authorization; the membership check
+/// only narrows who is allowed at all. Both are required.
+fn require_governance_member(env: &Env, member: &Address) -> Result<(), UpgradeError> {
+    member.require_auth();
+    if !is_governance_member(env, member) {
+        return Err(UpgradeError::Unauthorized);
+    }
+    Ok(())
+}
+
+/// The status a proposal *actually* has right now.
+///
+/// `Ready` is derived rather than stored, because no transaction runs at the
+/// moment the timelock elapses.
+fn effective_status(proposal: &UpgradeProposal, now: u64) -> ProposalStatus {
+    if proposal.status.is_terminal() {
+        return proposal.status.clone();
+    }
+    if now > proposal.expires_at {
+        return ProposalStatus::Expired;
+    }
+    if proposal.status == ProposalStatus::PendingTimelock && proposal.eta > 0 && now >= proposal.eta
+    {
+        return ProposalStatus::Ready;
+    }
+    proposal.status.clone()
+}
+
 // ─── Contract Implementation ─────────────────────────────────────────────────
 
 #[cfg(feature = "contract")]
@@ -479,7 +584,6 @@ impl UpgradeManager {
             return Err(UpgradeError::InvalidVersion);
         }
 
-        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Paused, &false);
         record_wasm_hash(&env, &initial_wasm_hash);
@@ -499,6 +603,7 @@ impl UpgradeManager {
         env.storage()
             .persistent()
             .set(&DataKey::Version(initial_version.clone()), &initial);
+        record_version(&env, &initial_version);
 
         extend_ttl_for_key(&env, &DataKey::CurrentVersion);
         extend_ttl_for_key(&env, &DataKey::Version(initial_version.clone()));
@@ -1066,7 +1171,7 @@ impl UpgradeManager {
         next_proposal_id(&env)
     }
 
-    /// Get all version history (for debugging/auditing).
+    /// Get all version history, newest first (for debugging/auditing).
     pub fn get_version_history(env: Env) -> Vec<ContractVersion> {
         let index: Vec<String> = env
             .storage()
@@ -1074,6 +1179,17 @@ impl UpgradeManager {
             .get(&DataKey::VersionIndex)
             .unwrap_or_else(|| Vec::new(&env));
         let mut history = Vec::new(&env);
+        let index: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VersionIndex)
+            .unwrap_or_else(|| Vec::new(&env));
+        if index.is_empty() {
+            if let Some(current) = get_current_version(&env) {
+                history.push_back(current);
+            }
+            return history;
+        }
         let mut i = index.len();
         while i > 0 {
             i -= 1;

@@ -12,8 +12,10 @@
 #![cfg(test)]
 
 use crate::{
+    upgradeable::{mock_swap_calls, stored_wasm_hash},
     DataKey, MigrationPlan, ProposalStatus, UpgradeError, UpgradeManager, UpgradeManagerClient,
-    DEFAULT_PROPOSAL_EXPIRY, DEFAULT_THRESHOLD, DEFAULT_TIMELOCK_DELAY, ROLLBACK_WINDOW_LEDGERS,
+    DEFAULT_PROPOSAL_EXPIRY, DEFAULT_THRESHOLD, DEFAULT_TIMELOCK_DELAY, GAS_MIGRATION_PER_ITEM,
+    GAS_MIGRATION_STEP_OVERHEAD, GAS_UPGRADE_BASE, ROLLBACK_WINDOW_LEDGERS,
 };
 use soroban_sdk::{
     symbol_short,
@@ -386,6 +388,16 @@ fn test_full_lifecycle_propose_approve_timelock_execute() {
         .all()
         .iter()
         .any(|(_, topics, _)| topics == applied));
+
+    // The test host retains only the most recent invocation's event buffer, so
+    // read it before any further contract call. These are the applied event.
+    let events = f.env.events().all();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected the applied event from execute_upgrade, got {}",
+        events.len()
+    );
 
     let v = f.client.get_current_version().unwrap();
     assert_eq!(v.version, String::from_str(&f.env, "2.0.0"));

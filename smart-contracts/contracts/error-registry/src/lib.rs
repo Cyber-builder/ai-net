@@ -59,7 +59,11 @@ fn require_admin(env: &Env) -> Result<Address, Error> {
         .storage()
         .instance()
         .get(&DataKey::Admin)
-        .ok_or(Error::NotInitialized)?;
+        .ok_or(Error::NotInitialized)
+}
+
+fn require_admin(env: &Env) -> Result<Address, Error> {
+    let admin = read_admin(env)?;
     admin.require_auth();
     Ok(admin)
 }
@@ -341,7 +345,7 @@ impl ErrorRegistryContract {
 
     pub fn get_error(env: Env, error_id: BytesN<32>) -> Option<ErrorRecord> {
         let now = env.ledger().timestamp();
-        let key = DataKey::Record(error_id);
+        let key = DataKey::Record(error_id.clone());
         if env.storage().persistent().has(&key) {
             env.storage()
                 .persistent()

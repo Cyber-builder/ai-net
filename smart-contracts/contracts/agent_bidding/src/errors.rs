@@ -97,4 +97,14 @@ pub enum Error {
     MaxBiddersReached = 37,
     /// The requested audit range is invalid.
     InvalidAuditRange = 38,
+    /// The referenced agent is not registered in the agent registry.
+    AgentNotFound = 39,
+    /// The referenced agent is frozen by the registry.
+    AgentFrozen = 40,
+    /// The registry rejected the agent for any other eligibility reason.
+    AgentNotEligible = 41,
+    /// The agent has been deregistered.
+    AgentDeregistered = 42,
+    /// The agent's bond is below the registry minimum.
+    InsufficientBond = 43,
 }
