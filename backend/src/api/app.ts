@@ -52,6 +52,7 @@ import { getOpenapiJson, getOpenapiYaml, openapiSpec, swaggerUiOptions } from ".
 import { createCostRouter } from "./routes/costs";
 import { createAgentWatchdogRouter } from "./routes/agentWatchdog";
 import { createAgentWatchdog } from "../services/agentWatchdog";
+import { invalidateAgentsCache } from "../cache/invalidation";
 import { flushActiveCosts, setPricingOverrides } from "../services/budget";
 import { createAdminRouter, createAdminQueueRouter } from "./routes/admin";
 import { createFlagsRouter } from "./routes/flags";
@@ -258,6 +259,8 @@ export function createApp(opts: AppOptions = {}): {
   const watchdog = createAgentWatchdog({
     intervalMs: config.AGENT_WATCHDOG_INTERVAL_MS,
     gracePeriodMinutes: config.AGENT_WATCHDOG_GRACE_MINUTES,
+    // Evicted agents must not be served from cached listings (#804).
+    invalidateCache: () => invalidateAgentsCache(),
     onEvict: registryLookup
       ? async (agent) => {
           const stillRegistered = registryLookup.getAgent(agent.id) !== undefined;
@@ -393,7 +396,11 @@ export function createApp(opts: AppOptions = {}): {
 
   // ── Admin Queue routes ─────────────────────────────────────────────────────
   app.use("/api/admin/queue", adminLimiter.middleware, createAdminQueueRouter(jobQueue));
-  app.use("/api/admin", adminLimiter.middleware, createAdminRouter({ queue: jobQueue, reconciliation: opts.reconciliation }));
+  app.use(
+    "/api/admin",
+    adminLimiter.middleware,
+    createAdminRouter({ queue: jobQueue, reconciliation: opts.reconciliation, watchdog }),
+  );
 
   // ── Feature-flag admin routes (#425) ───────────────────────────────────────
   app.use("/api/admin/flags", createFlagsRouter());

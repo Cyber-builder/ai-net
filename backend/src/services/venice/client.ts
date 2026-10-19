@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { createLogger } from '../../utils/logger.js';
 import { CircuitBreaker, type CircuitMetrics, type CircuitState, type CircuitTransition } from './circuitBreaker.js';
 import { trackCircuitBreaker } from '../circuitBreaker.js';
-import { CircuitOpenError, TokenBudgetExceededError, VeniceStatusError } from './errors.js';
+import { CircuitOpenError, TokenBudgetExceededError, VeniceStatusError, VeniceUnavailableError } from './errors.js';
+import {
+  VeniceKeyPool,
+  loadNumberedVeniceKeys,
+  setActiveVeniceKeyPool,
+  type VeniceKeyPoolOptions,
+} from './keyPool.js';
 import { VeniceResponseCache, buildCacheKey } from './cache.js';
 import { RequestDeduplicator } from './dedup.js';
 import { getConfig } from '../../config/index.js';
@@ -25,6 +31,17 @@ interface CacheEnvConfig {
   VENICE_REQUEST_TIMEOUT_MS: number;
   VENICE_PROVIDER_MAX_RETRIES: number;
 }
+
+/** Key-pool tuning resolved from the environment (issue #806). */
+interface KeyPoolEnvConfig {
+  VENICE_KEY_COOLDOWN_MS: number;
+  VENICE_KEY_ERROR_RATE_THRESHOLD: number;
+}
+
+const KEY_POOL_CONFIG_FALLBACK: KeyPoolEnvConfig = {
+  VENICE_KEY_COOLDOWN_MS: 60_000,
+  VENICE_KEY_ERROR_RATE_THRESHOLD: 0.2,
+};
 
 /** Circuit-breaker tuning resolved from the environment (issue #495). */
 interface CircuitEnvConfig {
@@ -148,6 +165,8 @@ export class VeniceClient implements VeniceClientLike {
   private readonly breaker: CircuitBreaker;
   private readonly cache: VeniceResponseCache;
   private readonly deduplicator: RequestDeduplicator;
+  /** Health of each provider key; keys in cooldown are skipped (#806). */
+  private readonly keyPool: VeniceKeyPool;
   private readonly modelVersion: string;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
@@ -195,6 +214,12 @@ export class VeniceClient implements VeniceClientLike {
     } else {
       this.providers = this.buildProvidersFromEnv(config);
     }
+
+    this.keyPool = new VeniceKeyPool(
+      this.providers.map((provider) => provider.apiKey),
+      this.resolveKeyPoolConfig(),
+    );
+    setActiveVeniceKeyPool(this.keyPool);
 
     const cacheConfig = config.cacheConfig ?? {};
     this.cache =
@@ -264,6 +289,12 @@ export class VeniceClient implements VeniceClientLike {
     };
     const providers: VeniceProviderConfig[] = [primary];
 
+    // Numbered keys (#806) join the chain after the primary and any explicit fallbacks.
+    for (const [index, key] of loadNumberedVeniceKeys().entries()) {
+      if (providers.some((provider) => provider.apiKey === key)) continue;
+      providers.push({ apiKey: key, baseUrl: primary.baseUrl, name: `key-${index + 1}` });
+    }
+
     // Try to read fallback env vars via getConfig (if available)
     try {
       const cfg: any = getConfig();
@@ -306,6 +337,27 @@ export class VeniceClient implements VeniceClientLike {
     } catch {
       return CONFIG_FALLBACK;
     }
+  }
+
+  private resolveKeyPoolConfig(): VeniceKeyPoolOptions {
+    try {
+      const config = getConfig() as any;
+      return {
+        cooldownMs: config?.VENICE_KEY_COOLDOWN_MS ?? KEY_POOL_CONFIG_FALLBACK.VENICE_KEY_COOLDOWN_MS,
+        errorRateThreshold:
+          config?.VENICE_KEY_ERROR_RATE_THRESHOLD ?? KEY_POOL_CONFIG_FALLBACK.VENICE_KEY_ERROR_RATE_THRESHOLD,
+      };
+    } catch {
+      return {
+        cooldownMs: KEY_POOL_CONFIG_FALLBACK.VENICE_KEY_COOLDOWN_MS,
+        errorRateThreshold: KEY_POOL_CONFIG_FALLBACK.VENICE_KEY_ERROR_RATE_THRESHOLD,
+      };
+    }
+  }
+
+  /** Key health snapshot for the admin status endpoint. Values are masked. */
+  getKeyPoolStatus(): ReturnType<VeniceKeyPool['getStatus']> {
+    return this.keyPool.getStatus();
   }
 
   private resolveCircuitConfig(): CircuitEnvConfig {
@@ -573,10 +625,16 @@ export class VeniceClient implements VeniceClientLike {
     });
 
     let lastError: Error | undefined;
+    let attempted = 0;
 
-    // Try providers in order (fallback chain)
+    // Try providers in order (fallback chain), skipping keys in cooldown (#806)
     for (let pIndex = 0; pIndex < this.providers.length; pIndex++) {
       const provider = this.providers[pIndex]!;
+      if (!this.keyPool.isAvailable(provider.apiKey)) {
+        log.warn({ agentType, model, skippedProvider: provider.name }, 'venice key in cooldown — skipping');
+        continue;
+      }
+      attempted += 1;
 
       try {
         const response = await this.fetchWithRetryForProvider(
@@ -596,6 +654,7 @@ export class VeniceClient implements VeniceClientLike {
         // anything.
         const usage = parseUsage(data) ?? estimateUsage(promptForLogging, content);
 
+        this.keyPool.recordResult(provider.apiKey, true);
         settleSuccess();
         this.logRequest(requestId, agentType, model, promptForLogging, Date.now() - start, 'ok', retries, provider.name, usage);
         return { content, usage };
@@ -608,6 +667,11 @@ export class VeniceClient implements VeniceClientLike {
         // fails over; other 4xx statuses will be rejected by every provider and
         // only serve to amplify load, so they fail fast.
         const mayFailover = shouldFailoverToNextProvider(lastError);
+        // Only failures that reflect on the key count against its health; a 400
+        // says nothing about the key that issued it.
+        if (mayFailover) {
+          this.keyPool.recordResult(provider.apiKey, false);
+        }
         if (mayFailover && pIndex < this.providers.length - 1) {
           const nextProvider = this.providers[pIndex + 1]!.name ?? `fallback-${pIndex + 1}`;
           log.warn(
@@ -624,6 +688,12 @@ export class VeniceClient implements VeniceClientLike {
         // If we have stale cache fallback enabled, the caller (createCompletion) will handle it
         throw lastError;
       }
+    }
+
+    // Every key was skipped for cooldown: fail fast rather than hang (#806).
+    if (attempted === 0) {
+      settleFailure();
+      throw new VeniceUnavailableError(this.providers.length);
     }
 
     // Should not reach here, but fallback

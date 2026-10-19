@@ -11,6 +11,7 @@ import { config } from "../config";
 
 import { getConfig } from "../config";
 import { encryptBackupFile } from "./backup/encryption";
+import { AuditLog, ensureAuditChainColumns } from "./auditLog";
 
 const logger = createLogger({ component: "admin-control" });
 
@@ -81,6 +82,8 @@ function openAuditDb(dbPath: string): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action
         ON admin_audit_log (action);
     `);
+    // Databases created before hash chaining (#808) gain prevHash/hash in place.
+    ensureAuditChainColumns(db);
     return db;
   } catch (err) {
     logger.error({ err, dbPath }, "failed to open admin audit database");
@@ -133,24 +136,25 @@ function redact(value: unknown): unknown {
   return redacted;
 }
 
+/**
+ * The hash-chained view over the admin audit database (#808). Created per call
+ * because it is a thin wrapper; the connection itself is cached by `getAuditDb`.
+ */
+export function getAdminAuditLog(): AuditLog {
+  return new AuditLog(getAuditDb());
+}
+
 export function recordAdminAudit(entry: AdminAuditEntry): void {
   try {
-    getAuditDb()
-      .prepare(
-        `
-        INSERT INTO admin_audit_log (at, actor, action, target, statusCode, requestId, details)
-        VALUES (@at, @actor, @action, @target, @statusCode, @requestId, @details)
-      `,
-      )
-      .run({
-        at: entry.at,
-        actor: entry.actor,
-        action: entry.action,
-        target: entry.target ?? null,
-        statusCode: entry.statusCode,
-        requestId: entry.requestId ?? null,
-        details: entry.details === undefined ? null : JSON.stringify(redact(entry.details)),
-      });
+    getAdminAuditLog().append({
+      at: entry.at,
+      actor: entry.actor,
+      action: entry.action,
+      target: entry.target ?? null,
+      statusCode: entry.statusCode,
+      requestId: entry.requestId ?? null,
+      details: entry.details === undefined ? null : JSON.stringify(redact(entry.details)),
+    });
   } catch (err) {
     logger.error({ err, action: entry.action }, "failed to write admin audit entry");
   }
