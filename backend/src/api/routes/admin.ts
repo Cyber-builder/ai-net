@@ -11,6 +11,7 @@ import {
   auditLogToCsv,
   backupDatabases,
   getReadOnlyState,
+  getAdminAuditLog,
   listAdminAuditLog,
   iterateAdminAuditLog,
   listAgentsForAdmin,
@@ -26,6 +27,12 @@ import {
 import type { ReconciliationRouterOptions } from "./reconciliation";
 import type { ReconciliationTrigger } from "../../services/reconciliation.types";
 import { getCostBudgetStatus } from "../../services/budget";
+import { getActiveVeniceKeyPool } from "../../services/venice/keyPool";
+import type { WatchdogStatus } from "../../services/agentWatchdog";
+import {
+  AUDIT_CHAIN_CSV_HEADER,
+  auditChainRowToCsv,
+} from "../../services/auditLog";
 import { createLogger } from "../../utils/logger";
 import { ValidationError, NotFoundError, AppError } from "../../errors";
 
@@ -63,6 +70,17 @@ const backupSchema = z.object({
   directory: z.string().min(1).optional(),
 });
 
+/** Query for the hash-chained audit listing (#808). */
+const auditChainQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  action: z.string().min(1).max(200).optional(),
+});
+
+const auditChainExportQuerySchema = z.object({
+  format: z.literal("csv").default("csv"),
+});
+
 /** Shared query-string schema for the paginated job-listing endpoints. */
 const jobListQuerySchema = z.object({
   status: z
@@ -76,6 +94,8 @@ const jobListQuerySchema = z.object({
 export interface AdminRouterOptions {
   queue?: JobQueue;
   reconciliation?: ReconciliationRouterOptions;
+  /** Agent watchdog whose status is served at `/watchdog/status` (#804). */
+  watchdog?: { getStatus: () => WatchdogStatus };
 }
 
 function asyncHandler(
@@ -665,6 +685,206 @@ export function createAdminRouter(options: AdminRouterOptions = {}): Router {
         logger.error({ err }, "audit log export failed");
         res.destroy();
       }
+    }),
+  );
+
+  /**
+   * @openapi
+   * /api/admin/watchdog/status:
+   *   get:
+   *     summary: Agent watchdog status (#804)
+   *     operationId: getWatchdogStatus
+   *     description: >
+   *       Whether the watchdog is running, when it last ran and when it runs next,
+   *       how many agents are quarantined, evictions in the last 24 hours, and the
+   *       most recent evictions.
+   *     tags: [Admin, Agents]
+   *     security:
+   *       - adminApiKey: []
+   *     responses:
+   *       200:
+   *         description: Watchdog status
+   *       401:
+   *         description: Missing or invalid admin API key
+   *       501:
+   *         description: The watchdog is not wired in this deployment
+   */
+  router.get("/watchdog/status", (_req: Request, res: Response) => {
+    if (!options.watchdog) {
+      res.status(501).json({
+        error: { code: "NOT_IMPLEMENTED", message: "agent watchdog is not wired" },
+      });
+      return;
+    }
+    res.json(options.watchdog.getStatus());
+  });
+
+  /**
+   * @openapi
+   * /api/admin/venice/keys:
+   *   get:
+   *     summary: Venice API key pool status (#806)
+   *     operationId: getVeniceKeyPoolStatus
+   *     description: >
+   *       Health of each configured Venice key: error rate over the recent window,
+   *       request count, and cooldown expiry. Keys appear only as their last four
+   *       characters.
+   *     tags: [Admin]
+   *     security:
+   *       - adminApiKey: []
+   *     responses:
+   *       200:
+   *         description: Key pool status
+   *       401:
+   *         description: Missing or invalid admin API key
+   */
+  router.get("/venice/keys", (_req: Request, res: Response) => {
+    const pool = getActiveVeniceKeyPool();
+    res.json({
+      keys: pool?.getStatus() ?? [],
+      healthyCount: pool?.healthyCount() ?? 0,
+    });
+  });
+
+  /**
+   * @openapi
+   * /api/admin/audit:
+   *   get:
+   *     summary: List hash-chained admin audit entries (#808)
+   *     operationId: listAdminAuditChain
+   *     description: >
+   *       Newest-first, paginated audit entries with their `prevHash` and `hash`.
+   *       Optionally filtered to one action name.
+   *     tags: [Admin]
+   *     security:
+   *       - adminApiKey: []
+   *     parameters:
+   *       - in: query
+   *         name: page
+   *         schema: { type: integer, minimum: 1, default: 1 }
+   *       - in: query
+   *         name: pageSize
+   *         schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+   *       - in: query
+   *         name: action
+   *         schema: { type: string }
+   *         description: Only entries with this exact action, e.g. `admin.agent.suspend`
+   *     responses:
+   *       200:
+   *         description: One page of audit entries
+   *       400:
+   *         description: Invalid query parameters
+   *       401:
+   *         description: Missing or invalid admin API key
+   */
+  router.get("/audit", (req: Request, res: Response, next: NextFunction) => {
+    const parsed = auditChainQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      next(new ValidationError(
+        "Invalid query parameters",
+        { issues: parsed.error.flatten() },
+        res.locals.correlationId as string | undefined,
+      ));
+      return;
+    }
+    const { page, pageSize, action } = parsed.data;
+    const entries = getAdminAuditLog().list({ page, pageSize, action });
+    res.json({ entries, page, pageSize });
+  });
+
+  /**
+   * @openapi
+   * /api/admin/audit/verify:
+   *   post:
+   *     summary: Verify the audit hash chain (#808)
+   *     operationId: verifyAdminAuditChain
+   *     description: >
+   *       Recomputes every chained hash from the stored fields. Returns
+   *       `valid: false` with `firstBrokenAt` set to the id of the first entry
+   *       that fails. Pre-chaining rows are counted in `legacyRows` and skipped.
+   *     tags: [Admin]
+   *     security:
+   *       - adminApiKey: []
+   *     responses:
+   *       200:
+   *         description: Chain verification result
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 valid: { type: boolean }
+   *                 firstBrokenAt: { type: string }
+   *                 checked: { type: integer }
+   *                 legacyRows: { type: integer }
+   *       401:
+   *         description: Missing or invalid admin API key
+   */
+  router.post("/audit/verify", (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      res.json(getAdminAuditLog().verify());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * @openapi
+   * /api/admin/audit/export:
+   *   get:
+   *     summary: Export the hash-chained audit log as CSV (#808)
+   *     operationId: exportAdminAuditChain
+   *     description: >
+   *       Streams every entry newest-first for compliance review. `prevHash` and
+   *       `hash` are truncated to 16 characters. Formula-like cells are neutralised.
+   *     tags: [Admin]
+   *     security:
+   *       - adminApiKey: []
+   *     parameters:
+   *       - in: query
+   *         name: format
+   *         schema: { type: string, enum: [csv], default: csv }
+   *     responses:
+   *       200:
+   *         description: CSV export
+   *       400:
+   *         description: Invalid query parameters
+   *       401:
+   *         description: Missing or invalid admin API key
+   */
+  router.get(
+    "/audit/export",
+    asyncHandler(async (req: Request, res: Response) => {
+      const parsed = auditChainExportQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        throw new ValidationError(
+          "Invalid query parameters",
+          { issues: parsed.error.flatten() },
+          res.locals.correlationId as string | undefined,
+        );
+      }
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", 'attachment; filename="audit-chain.csv"');
+      res.write(`${AUDIT_CHAIN_CSV_HEADER}\n`);
+
+      // Honour backpressure so a slow client cannot make the server buffer the export.
+      for (const batch of getAdminAuditLog().iterateRows(AUDIT_EXPORT_MAX_ROWS)) {
+        if (res.destroyed) return;
+        const chunk = batch.map((row) => `${auditChainRowToCsv(row)}\n`).join("");
+        if (!res.write(chunk)) {
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              res.off("drain", done);
+              res.off("close", done);
+              resolve();
+            };
+            res.once("drain", done);
+            res.once("close", done);
+          });
+        }
+      }
+      res.end();
     }),
   );
 

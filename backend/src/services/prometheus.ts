@@ -30,6 +30,10 @@ import { getCostBudgetStatus } from './budget';
 import { getSseMetricsSnapshot } from './sseMetrics';
 import { getQualityScoreCacheTotals } from './qualityScoreCache';
 import { getEventStoreColdSizeBytes, getEventStoreHotSizeBytes } from '../events/eventColdArchive';
+import { databasePoolMetrics } from '../db/metrics';
+import { getDbQueryMetricsSnapshot } from '../db/queryMetrics';
+import { getActiveVeniceKeyPool } from './venice/keyPool';
+import { getAgentWatchdogEvictionsTotal } from './agentWatchdog';
 import type { RequestSample } from './metrics.types';
 
 const logger = createLogger({ component: 'prometheus' });
@@ -369,6 +373,71 @@ function collectSseMetrics(): string {
   return out;
 }
 
+/**
+ * SQLite query latency histogram, pool utilisation and slow-query counters
+ * (issue #807). Pools that have not been opened yet are omitted.
+ */
+function collectDbMetrics(): string {
+  const queries = getDbQueryMetricsSnapshot();
+  const pools = databasePoolMetrics();
+  let out = '';
+
+  out += '# HELP db_query_duration_seconds SQLite statement duration in seconds\n';
+  out += '# TYPE db_query_duration_seconds histogram\n';
+  for (const [db, series] of Object.entries(queries.databases)) {
+    for (const [operation, op] of Object.entries(series.operations)) {
+      if (!op) continue;
+      const labels = `db="${escapeLabelValue(db)}",operation="${operation}"`;
+      let cumulative = 0;
+      for (const bucket of op.buckets) {
+        cumulative += bucket.count;
+        out += `db_query_duration_seconds_bucket{${labels},le="${bucket.le}"} ${cumulative}\n`;
+      }
+      out += `db_query_duration_seconds_bucket{${labels},le="+Inf"} ${op.count}\n`;
+      out += `db_query_duration_seconds_sum{${labels}} ${op.sumSeconds}\n`;
+      out += `db_query_duration_seconds_count{${labels}} ${op.count}\n`;
+    }
+  }
+
+  out += '# HELP db_pool_connections_active Connections currently checked out, per database\n';
+  out += '# TYPE db_pool_connections_active gauge\n';
+  for (const [db, pool] of Object.entries(pools)) {
+    out += `db_pool_connections_active{db="${escapeLabelValue(db)}"} ${pool.activeConnections}\n`;
+  }
+
+  out += '# HELP db_pool_connections_waiting Callers waiting for a free connection, per database\n';
+  out += '# TYPE db_pool_connections_waiting gauge\n';
+  for (const [db, pool] of Object.entries(pools)) {
+    out += `db_pool_connections_waiting{db="${escapeLabelValue(db)}"} ${pool.pendingAcquires}\n`;
+  }
+
+  out += '# HELP db_slow_queries_total Statements at or above SLOW_QUERY_THRESHOLD_MS, per database\n';
+  out += '# TYPE db_slow_queries_total counter\n';
+  for (const [db, series] of Object.entries(queries.databases)) {
+    out += `db_slow_queries_total{db="${escapeLabelValue(db)}"} ${series.slowQueries}\n`;
+  }
+  return out;
+}
+
+/** Agent watchdog evictions since process start (issue #804). */
+function collectWatchdogMetrics(): string {
+  return formatCounter(
+    'agent_watchdog_evictions_total',
+    'Agents evicted for missing their heartbeat grace period',
+    getAgentWatchdogEvictionsTotal(),
+  );
+}
+
+/** Venice API keys currently available for rotation (issue #806). */
+function collectVeniceKeyPoolMetrics(): string {
+  const pool = getActiveVeniceKeyPool();
+  return formatGauge(
+    'venice_key_pool_healthy_count',
+    'Venice API keys not currently cooling down',
+    pool?.healthyCount() ?? 0,
+  );
+}
+
 /** Event database and cold archive sizes on disk (issue #809). */
 function collectEventStoreMetrics(): string {
   let out = '';
@@ -443,6 +512,12 @@ export function generatePrometheusMetrics(): string {
   body += collectQualityScoreCacheMetrics();
   body += '\n';
   body += collectEventStoreMetrics();
+  body += '\n';
+  body += collectDbMetrics();
+  body += '\n';
+  body += collectVeniceKeyPoolMetrics();
+  body += '\n';
+  body += collectWatchdogMetrics();
   body += '\n';
   body += collectProcessMetrics();
 

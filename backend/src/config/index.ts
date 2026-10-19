@@ -70,6 +70,13 @@ const envSchema = z.object({
   VENICE_PROVIDER_MAX_RETRIES: z.coerce.number().int().positive().default(3),
   VENICE_FALLBACK_API_KEYS: z.string().optional(),
   VENICE_FALLBACK_BASE_URLS: z.string().optional(),
+  /**
+   * Cooldown applied to a Venice key whose recent error rate crosses
+   * `VENICE_KEY_ERROR_RATE_THRESHOLD` (#806). `VENICE_API_KEY_1..10` are read
+   * directly by the key pool, so they are not declared here.
+   */
+  VENICE_KEY_COOLDOWN_MS: z.coerce.number().int().positive().default(60_000),
+  VENICE_KEY_ERROR_RATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.2),
 
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required").default("./data/ai-net.db"),
   DB_MIGRATIONS_DIR: z.string().optional(),
@@ -146,7 +153,8 @@ const envSchema = z.object({
   HEARTBEAT_STALE_THRESHOLD_MINUTES: z.coerce.number().int().positive().default(5),
   AGENT_OFFLINE_DELETE_HOURS: z.coerce.number().int().positive().default(24),
 
-  AGENT_WATCHDOG_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  /** Watchdog pass interval. Floor of 10s so a typo cannot turn the scan into a busy loop (#804). */
+  AGENT_WATCHDOG_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
   AGENT_WATCHDOG_GRACE_MINUTES: z.coerce.number().int().positive().default(10),
 
   RECONCILIATION_WEBHOOK_URL: z.string().url().optional(),
@@ -330,6 +338,12 @@ const envSchema = z.object({
   AUDIT_LOG_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
   /** Directory for admin backups. Default: ./data/backups/admin */
   ADMIN_BACKUP_DIR: z.string().default("./data/backups/admin"),
+
+  // ── Database observability (#807) ───────────────────────────────────────────
+  /** Comma-separated query-latency histogram bounds in milliseconds. Default: 1,5,10,50,100,500,1000 */
+  DB_LATENCY_BUCKETS: z.string().optional(),
+  /** Statements at or above this duration are logged as `slow_query`. Default: 200 */
+  SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().positive().default(200),
 
   // ── Agent ownership proof (#557, #558) ───────────────────────────────────────
   /**
