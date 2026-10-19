@@ -81,6 +81,9 @@ jobs:
       - name: Unit tests & coverage
         run: npm run test:coverage
 
+      - name: OpenAPI contract tests
+        run: npm run test:contract
+
       - name: Performance latency budgets
         run: npm run test:performance
 

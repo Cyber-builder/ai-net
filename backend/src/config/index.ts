@@ -482,6 +482,33 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     }
   }
 
+  // Fail closed on CORS (#810). Origins are matched exactly, so a wildcard or
+  // `null` entry can never match a real origin and only signals a
+  // misconfiguration. Production must also name its origins explicitly rather
+  // than silently inheriting the localhost default.
+  const originEntries = result.data.ALLOWED_ORIGINS.split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  const invalidOrigin = originEntries.find((origin) => origin.includes("*") || origin === "null");
+  if (invalidOrigin) {
+    throw new ConfigValidationError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["ALLOWED_ORIGINS"],
+        message: `ALLOWED_ORIGINS entry "${invalidOrigin}" is not allowed; list each origin explicitly (no wildcards, no "null")`,
+      },
+    ]);
+  }
+  if (nodeEnv === "production" && (!env.ALLOWED_ORIGINS?.trim() || originEntries.length === 0)) {
+    throw new ConfigValidationError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["ALLOWED_ORIGINS"],
+        message: "ALLOWED_ORIGINS is required in production and must list at least one origin",
+      },
+    ]);
+  }
+
   // Warn in development if using default secret
   if (nodeEnv === "development") {
     const secret = result.data.AUTH_JWT_SECRET;
