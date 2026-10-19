@@ -174,6 +174,12 @@ const envSchema = z.object({
   /** Maximum release transactions verified against Horizon in a single run. */
   RECONCILIATION_MAX_TX_LOOKUPS: z.coerce.number().int().positive().default(200),
 
+  // ── Drift alerting thresholds (issue #811) ──────────────────────────────────
+  /** Amount drift (percent of the expected amount) that raises a `warning` alert. */
+  RECONCILIATION_WARNING_DRIFT_PERCENT: z.coerce.number().nonnegative().default(1.0),
+  /** Amount drift (percent of the expected amount) that raises a `critical` alert. */
+  RECONCILIATION_CRITICAL_DRIFT_PERCENT: z.coerce.number().nonnegative().default(5.0),
+
   COMPRESSION_THRESHOLD: z.coerce.number().int().min(0).default(1024),
   COMPRESSION_LEVEL: z.coerce.number().int().min(1).max(9).default(6),
   COMPRESSION_ENABLE_BROTLI: z
@@ -222,6 +228,15 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .transform((v) => v === "true")
     .default("true"),
+  /**
+   * Days an archived event stays in the SQLite archive table before its whole
+   * UTC day moves to a cold file (issue #809).
+   */
+  EVENT_HOT_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
+  /** Root directory for cold, gzip-compressed daily event archives (issue #809). */
+  EVENT_ARCHIVE_DIR: z.string().default("./data/archive"),
+  /** Days a daily cold archive is kept before it is purged (issue #809). */
+  EVENT_COLD_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
 
   // ── Idempotency store (Issue #657) ───────────────────────────────────────────
   /** How long completed idempotency keys are retained for replay. Default: 24 h. */
@@ -264,6 +279,10 @@ const envSchema = z.object({
   // ── SSE task event stream (#751) ────────────────────────────────────────────
   SSE_MAX_CONNECTIONS_PER_CLIENT: z.coerce.number().int().positive().default(5),
   SSE_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
+  /** Socket write-buffer size above which task events are dropped for a slow client (#813). */
+  SSE_HIGH_WATER_MARK_BYTES: z.coerce.number().int().positive().default(65_536),
+  /** Close a stream with `stream_timeout` after this long without a successful write (#813). */
+  SSE_STALE_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
 
   METRICS_CACHE_TTL_MS: z.coerce.number().int().positive().default(5_000),
   METRICS_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
@@ -293,6 +312,12 @@ const envSchema = z.object({
   QUALITY_PERCENTILE_ENABLED: z.enum(["true", "false"]).transform((v) => v === "true").default("false"),
   /** Minimum samples required for percentile calculation. Default: 10 */
   QUALITY_PERCENTILE_MIN_SAMPLES: z.coerce.number().int().positive().default(10),
+  /** Cache quality scores by output content hash, skipping repeat scoring work. Default: true (#812) */
+  QUALITY_SCORER_CACHE_ENABLED: z.enum(["true", "false"]).transform((v) => v === "true").default("true"),
+  /** How long a cached quality score stays valid, in ms. Default: 1 hour (#812) */
+  QUALITY_SCORER_CACHE_TTL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /** Maximum cached quality scores before LRU eviction. Default: 500 (#812) */
+  QUALITY_SCORER_CACHE_MAX_ENTRIES: z.coerce.number().int().positive().default(500),
 
   // ── Admin Control Configuration ─────────────────────────────────────────────
   /** Enable read-only mode for the API. Default: false */
