@@ -55,6 +55,10 @@ const reconciliationSchema = z.object({
   triggeredBy: z.enum(["manual", "scheduled", "release"]).default("manual"),
 });
 
+const reconciliationAlertsQuerySchema = z.object({
+  hours: z.coerce.number().positive().max(720).default(24),
+});
+
 const backupSchema = z.object({
   directory: z.string().min(1).optional(),
 });
@@ -398,6 +402,48 @@ export function createAdminRouter(options: AdminRouterOptions = {}): Router {
       res.status(200).json(report);
     }),
   );
+
+  /**
+   * @openapi
+   * /api/admin/reconciliation/alerts:
+   *   get:
+   *     summary: List recent payment drift alerts
+   *     operationId: listAdminReconciliationAlerts
+   *     description: >
+   *       Drift alerts raised at or above the configured warning or critical
+   *       thresholds (`RECONCILIATION_WARNING_DRIFT_PERCENT`,
+   *       `RECONCILIATION_CRITICAL_DRIFT_PERCENT`) within the last `hours`.
+   *       Kept in process memory, so the list resets when the process restarts.
+   *     tags: [Admin, Reconciliation]
+   *     security:
+   *       - adminApiKey: []
+   *     parameters:
+   *       - in: query
+   *         name: hours
+   *         required: false
+   *         schema: { type: number, minimum: 0, maximum: 720, default: 24 }
+   *     responses:
+   *       200:
+   *         description: Drift alerts, oldest first
+   *       400:
+   *         description: Invalid query parameters
+   *       401:
+   *         description: Missing or invalid admin API key
+   *       503:
+   *         description: ADMIN_API_KEY is not configured
+   */
+  router.get("/reconciliation/alerts", (req: Request, res: Response, next: NextFunction) => {
+    const parsed = reconciliationAlertsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      next(new ValidationError(
+        "Invalid query parameters",
+        { issues: parsed.error.flatten() },
+        res.locals.correlationId as string | undefined,
+      ));
+      return;
+    }
+    res.status(200).json({ alerts: reconciliationService.getRecentAlerts(parsed.data.hours) });
+  });
 
   /**
    * @openapi

@@ -27,6 +27,9 @@ import { metricsService } from './metrics';
 import { quotaMetricsRegistry } from './quota/metrics';
 import { getQueueRetryMetrics } from '../queue/backoff';
 import { getCostBudgetStatus } from './budget';
+import { getSseMetricsSnapshot } from './sseMetrics';
+import { getQualityScoreCacheTotals } from './qualityScoreCache';
+import { getEventStoreColdSizeBytes, getEventStoreHotSizeBytes } from '../events/eventColdArchive';
 import type { RequestSample } from './metrics.types';
 
 const logger = createLogger({ component: 'prometheus' });
@@ -351,6 +354,39 @@ function collectQuotaMetrics(): string {
   }
 }
 
+/** Task event SSE stream counters (issue #813). */
+function collectSseMetrics(): string {
+  const sse = getSseMetricsSnapshot();
+  let out = '';
+  out += formatGauge('sse_active_connections', 'Open task event SSE streams', sse.activeConnections);
+  out += formatCounter('sse_events_sent_total', 'Task events written to SSE clients', sse.eventsSent);
+  out += formatCounter('sse_events_dropped_total', 'Task events dropped by SSE backpressure', sse.eventsDropped);
+  out += formatCounter(
+    'sse_connections_timed_out_total',
+    'SSE streams closed for a client that stopped accepting writes',
+    sse.connectionsTimedOut,
+  );
+  return out;
+}
+
+/** Event database and cold archive sizes on disk (issue #809). */
+function collectEventStoreMetrics(): string {
+  let out = '';
+  out += formatGauge('event_store_hot_size_bytes', 'Event database file size in bytes', getEventStoreHotSizeBytes());
+  out += formatGauge('event_store_cold_size_bytes', 'Cold event archive size in bytes', getEventStoreColdSizeBytes());
+  return out;
+}
+
+/** Quality scorer result cache counters (issue #812). */
+function collectQualityScoreCacheMetrics(): string {
+  const totals = getQualityScoreCacheTotals();
+  let out = '';
+  out += formatCounter('quality_scorer_cache_hits_total', 'Quality score cache hits', totals.hits);
+  out += formatCounter('quality_scorer_cache_misses_total', 'Quality score cache misses', totals.misses);
+  out += formatGauge('quality_scorer_cache_size', 'Entries in the quality score cache', totals.size);
+  return out;
+}
+
 function collectProcessMetrics(): string {
   const mem = process.memoryUsage();
   const uptimeSeconds = Math.floor(process.uptime());
@@ -401,6 +437,12 @@ export function generatePrometheusMetrics(): string {
   body += collectLlmMetrics(samples);
   body += '\n';
   body += collectQuotaMetrics();
+  body += '\n';
+  body += collectSseMetrics();
+  body += '\n';
+  body += collectQualityScoreCacheMetrics();
+  body += '\n';
+  body += collectEventStoreMetrics();
   body += '\n';
   body += collectProcessMetrics();
 

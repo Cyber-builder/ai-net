@@ -381,10 +381,16 @@ describe("ReconciliationService alerts", () => {
 
     const report = await service.run();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://alerts.example.com/reconciliation");
-    expect(JSON.parse((init as RequestInit).body as string).id).toBe(report.id);
+    // One POST carries the full report; one more carries the threshold drift alert (#811).
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const urls = fetchMock.mock.calls.map(([url]) => url);
+    expect(urls).toEqual([
+      "https://alerts.example.com/reconciliation",
+      "https://alerts.example.com/reconciliation",
+    ]);
+    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(bodies.find((body) => body.alert === undefined)?.id).toBe(report.id);
+    expect(bodies.filter((body) => body.alert === "payment_drift_detected")).toHaveLength(1);
   });
 
   it("does not POST to the webhook when no discrepancies are found", async () => {
